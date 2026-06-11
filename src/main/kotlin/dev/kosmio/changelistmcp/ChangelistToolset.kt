@@ -5,11 +5,13 @@ import com.intellij.mcpserver.annotations.McpDescription
 import com.intellij.mcpserver.annotations.McpTool
 import com.intellij.mcpserver.mcpFail
 import com.intellij.mcpserver.project
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.edtWriteAction
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diff.impl.patch.IdeaTextPatchBuilder
 import com.intellij.openapi.diff.impl.patch.UnifiedDiffWriter
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.progress.util.ProgressIndicatorUtils
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
@@ -32,6 +34,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.StringWriter
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
 
 /**
  * Contributes changelist-management tools to IntelliJ's built-in MCP server.
@@ -75,10 +78,16 @@ class ChangelistToolset : McpToolset {
             ?: mcpFail("Project base directory not found in the VFS")
 
         // Synchronous VFS refresh + VCS dirty recompute must run off-EDT and off any read/write lock.
+        // The VFS refresh spawns asynchronous VCS dirty marking, so a single waitForUpdate can return
+        // while a trailing update is still scheduled — drain those so control returns only when the
+        // pipeline is quiescent (otherwise a trailing update clobbers the next mutation's worker seed).
         withContext(Dispatchers.IO) {
             VfsUtil.markDirtyAndRefresh(false, true, true, baseDir)
             VcsDirtyScopeManager.getInstance(project).markEverythingDirty()
-            ChangeListManagerEx.getInstanceEx(project).waitForUpdate()
+            val clm = ChangeListManagerImpl.getInstanceImpl(project)
+            clm.waitForUpdate()
+            var guard = 0
+            while (clm.isInUpdate() && guard++ < MAX_SETTLE_DRAINS) clm.waitForUpdate()
         }
         return RefreshResult(refreshed = true)
     }
@@ -109,7 +118,10 @@ class ChangelistToolset : McpToolset {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
         val clm = ChangeListManagerImpl.getInstanceImpl(project)
-        edtWriteAction {
+        // Create + (optional) set-default on the updater thread so they are serialized with the update
+        // pipeline. putFilesInto then runs on the same serialized queue, so the new list already exists
+        // when the move runs.
+        onUpdaterThread(clm) {
             val newList = clm.addChangeList(name, comment ?: "")
             if (setActive) clm.setDefaultChangeList(newList)
         }
@@ -142,25 +154,35 @@ class ChangelistToolset : McpToolset {
         @McpDescription("Name of an existing changelist to move this list's files into before deletion. Defaults to the active default changelist (whatever it is named).") moveContentsTo: String? = null,
     ): DeleteResult {
         val project = currentCoroutineContext().project
-        return edtWriteAction {
-            val clm = ChangeListManagerEx.getInstanceEx(project)
+        val clm = ChangeListManagerImpl.getInstanceImpl(project)
+        // Validate up front (read-only); fail fast before touching the update pipeline.
+        readAction {
             val list = clm.changeLists.firstOrNull { it.name == name }
                 ?: mcpFail("Changelist '$name' not found")
             if (list.isDefault) mcpFail("Refusing to delete the Default changelist")
-
-            val changes = list.changes.toList()
-            if (changes.isNotEmpty()) {
-                val target = if (moveContentsTo != null) {
-                    clm.changeLists.firstOrNull { it.name == moveContentsTo }
-                        ?: mcpFail("Relocation target changelist '$moveContentsTo' not found")
-                } else {
-                    clm.defaultChangeList
-                }
-                clm.moveChangesTo(target, *changes.toTypedArray())
+            if (moveContentsTo != null && clm.changeLists.none { it.name == moveContentsTo }) {
+                mcpFail("Relocation target changelist '$moveContentsTo' not found")
             }
-            clm.removeChangeList(list.name)
-            DeleteResult(deleted = true)
         }
+        // Relocate contents then remove, serialized with the update pipeline. Re-fetch the list/target
+        // and its changes inside the runnable — never act on Change objects cached across the suspension.
+        onUpdaterThread(clm) {
+            ApplicationManager.getApplication().runReadAction(Runnable {
+                val list = clm.changeLists.firstOrNull { it.name == name } ?: return@Runnable
+                val changes = list.changes.toList()
+                if (changes.isNotEmpty()) {
+                    val target = if (moveContentsTo != null) {
+                        clm.changeLists.firstOrNull { it.name == moveContentsTo } ?: return@Runnable
+                    } else {
+                        clm.defaultChangeList
+                    }
+                    clm.moveChangesTo(target, *changes.toTypedArray())
+                }
+                clm.removeChangeList(list.name)
+            })
+        }
+        settle(clm)
+        return DeleteResult(deleted = true)
     }
 
     @McpTool
@@ -177,13 +199,20 @@ class ChangelistToolset : McpToolset {
         @McpDescription("The comment / default commit message to set on the changelist.") comment: String,
     ): CommentResult {
         val project = currentCoroutineContext().project
-        return edtWriteAction {
-            val clm = ChangeListManagerImpl.getInstanceImpl(project)
-            clm.changeLists.firstOrNull { it.name == name }
-                ?: mcpFail("Changelist '$name' not found")
-            clm.editComment(name, comment)
-            CommentResult(name = name, comment = comment)
+        val clm = ChangeListManagerImpl.getInstanceImpl(project)
+        readAction {
+            clm.changeLists.firstOrNull { it.name == name } ?: mcpFail("Changelist '$name' not found")
         }
+        // Apply on the updater thread, settle, and verify the comment stuck — a trailing update can
+        // otherwise rebuild the worker from a pre-edit seed and revert it. Reapply up to MAX_REAPPLY.
+        var attempt = 0
+        while (true) {
+            onUpdaterThread(clm) { clm.editComment(name, comment) }
+            settle(clm)
+            val current = readAction { clm.changeLists.firstOrNull { it.name == name }?.comment ?: "" }
+            if (current == comment || ++attempt >= MAX_REAPPLY) break
+        }
+        return CommentResult(name = name, comment = comment)
     }
 
     @McpTool
@@ -303,10 +332,13 @@ class ChangelistToolset : McpToolset {
      * source_readonly / add_failed). Resolution is by the change set keyed on path, so deleted and moved
      * files — which have no live VirtualFile — resolve correctly.
      *
-     * Two phases by necessity: moving changes needs the write lock (done in [edtWriteAction]), but
-     * scheduling for addition runs a synchronous VCS task that must NOT hold the write lock and must be
-     * off the EDT — so it runs on [Dispatchers.IO] via the non-modal `addUnversionedFilesToVcsInSync`.
-     * Change objects are re-fetched inside the write action; only stable VirtualFiles cross the boundary.
+     * Three phases: (1a) classify the requested paths under a read action; (1b) move tracked changes on
+     * the ChangeListManager updater thread (via [moveByPaths]) so the move is serialized with the update
+     * pipeline and a trailing/racing update can't revert it; (2) schedule unversioned files for addition
+     * with a synchronous VCS task that must NOT hold the write lock and must be off the EDT — it runs on
+     * [Dispatchers.IO] via the non-modal `addUnversionedFilesToVcsInSync`; (3) settle and verify the moved
+     * files landed, reapplying any the pipeline reverted ([verifyMovedOrReapply]). Change objects are
+     * re-resolved by path inside each updater-thread runnable; nothing but stable paths crosses suspensions.
      */
     private suspend fun putFilesInto(
         project: Project,
@@ -321,20 +353,12 @@ class ChangelistToolset : McpToolset {
         val skipped = mutableListOf<SkippedFile>()
         val toAdd = mutableListOf<VirtualFile>()
 
-        // Phase 1: partition, and move already-tracked changes under the write lock.
-        edtWriteAction {
-            val target = clm.changeLists.firstOrNull { it.name == targetName }
-                ?: mcpFail("Changelist '$targetName' not found")
-            // Index every current change by project-relative path. Resolving via the change set (rather than
-            // a VFS lookup) is what lets DELETED and MOVED files resolve — their original path has no live
-            // VirtualFile, so findFileByPath would wrongly report them not_found.
-            val changeByPath = HashMap<String, Change>()
-            for (list in clm.changeLists) {
-                for (change in list.changes) {
-                    changeByPath[relativize(basePath, change)] = change
-                }
-            }
-            val toMove = mutableListOf<Change>()
+        // Phase 1a: partition under a read action (classification only — no mutation yet). Resolving via
+        // the change set (rather than a VFS lookup) is what lets DELETED and MOVED files resolve — their
+        // original path has no live VirtualFile, so findFileByPath would wrongly report them not_found.
+        readAction {
+            if (clm.changeLists.none { it.name == targetName }) mcpFail("Changelist '$targetName' not found")
+            val changeByPath = currentChangeByPath(clm, basePath)
             for (rel in files) {
                 val change = changeByPath[rel]
                 if (change != null) {
@@ -342,7 +366,6 @@ class ChangelistToolset : McpToolset {
                     if (sourceList != null && sourceList.isReadOnly) {
                         skipped += SkippedFile(rel, "source_readonly")
                     } else {
-                        toMove += change
                         moved += rel
                     }
                     continue
@@ -358,8 +381,12 @@ class ChangelistToolset : McpToolset {
                     else -> skipped += SkippedFile(rel, "not_modified")
                 }
             }
-            if (toMove.isNotEmpty()) clm.moveChangesTo(target, *toMove.toTypedArray())
         }
+
+        // Phase 1b: move the tracked changes on the updater thread, serialized with the update pipeline so
+        // a trailing/racing update (from an external-edit VFS refresh) cannot rebuild the worker from a
+        // seed snapshot that predates the move.
+        if (moved.isNotEmpty()) moveByPaths(clm, basePath, targetName, moved)
 
         // Phase 2: schedule unversioned files for addition — synchronous, off-EDT, no write lock, no modal.
         if (toAdd.isNotEmpty()) {
@@ -378,7 +405,103 @@ class ChangelistToolset : McpToolset {
                 added.clear()
             }
         }
+
+        // Phase 3: settle the pipeline and verify the moved files actually landed in the target; reapply
+        // any that a trailing update reverted. Bounded — best-effort if some still won't stick.
+        if (moved.isNotEmpty()) verifyMovedOrReapply(clm, basePath, targetName, moved)
+
         return MoveOutcome(moved, added, skipped)
+    }
+
+    /** Index every current change by project-relative path. Requires read access (call inside a read action). */
+    private fun currentChangeByPath(clm: ChangeListManagerImpl, basePath: String): Map<String, Change> {
+        val map = HashMap<String, Change>()
+        for (list in clm.changeLists) {
+            for (change in list.changes) map[relativize(basePath, change)] = change
+        }
+        return map
+    }
+
+    /**
+     * Move the changes for [paths] into [targetName] on the ChangeListManager updater thread. Change
+     * objects are re-resolved by path INSIDE the runnable (under a read action) so we never act on
+     * instances cached across the suspension, and the move cannot interleave with an update's
+     * snapshot/rebuild. A missing target list inside the runnable is a no-op (validated by the caller).
+     */
+    private suspend fun moveByPaths(
+        clm: ChangeListManagerImpl,
+        basePath: String,
+        targetName: String,
+        paths: List<String>,
+    ) {
+        onUpdaterThread(clm) {
+            ApplicationManager.getApplication().runReadAction(Runnable {
+                val target = clm.changeLists.firstOrNull { it.name == targetName } ?: return@Runnable
+                val byPath = currentChangeByPath(clm, basePath)
+                val toMove = paths.mapNotNull { byPath[it] }
+                if (toMove.isNotEmpty()) clm.moveChangesTo(target, *toMove.toTypedArray())
+            })
+        }
+    }
+
+    /**
+     * Settle the pipeline and confirm each path in [moved] is now in [targetName]; reapply any that
+     * regressed. Bounded by [MAX_REAPPLY]. A path whose change has since disappeared is not a regression.
+     */
+    private suspend fun verifyMovedOrReapply(
+        clm: ChangeListManagerImpl,
+        basePath: String,
+        targetName: String,
+        moved: List<String>,
+    ) {
+        var pending = moved
+        var attempt = 0
+        while (true) {
+            settle(clm)
+            pending = readAction {
+                val byPath = currentChangeByPath(clm, basePath)
+                pending.filter { rel ->
+                    val change = byPath[rel] ?: return@filter false // change gone → nothing to reassert
+                    clm.getChangeList(change)?.name != targetName
+                }
+            }
+            if (pending.isEmpty() || ++attempt >= MAX_REAPPLY) break
+            moveByPaths(clm, basePath, targetName, pending)
+        }
+    }
+
+    /**
+     * Run [mutate] on the ChangeListManager updater thread (the serialized ChangeListScheduler queue that
+     * also runs VCS updates) and block until it completes. Serializing the mutation with the update
+     * pipeline guarantees it cannot interleave with an update's worker snapshot/rebuild, so a
+     * trailing/racing update seeds from the mutated worker and preserves the change. [mutate] runs OFF the
+     * EDT and holds no read lock — wrap any reads it does in a runReadAction { }. The ChangeListManagerImpl
+     * mutators it calls (moveChangesTo / editComment / addChangeList / setDefaultChangeList /
+     * removeChangeList) acquire read access internally.
+     */
+    private suspend fun onUpdaterThread(clm: ChangeListManagerImpl, mutate: () -> Unit) {
+        val latch = CountDownLatch(1)
+        var failure: Throwable? = null
+        clm.executeOnUpdaterThread {
+            try {
+                mutate()
+            } catch (t: Throwable) {
+                failure = t
+            } finally {
+                latch.countDown()
+            }
+        }
+        withContext(Dispatchers.IO) { ProgressIndicatorUtils.awaitWithCheckCanceled(latch) }
+        failure?.let { throw it }
+    }
+
+    /** Block until the ChangeListManager pipeline is quiescent. Must be called OFF any read/write lock. */
+    private suspend fun settle(clm: ChangeListManagerImpl) {
+        withContext(Dispatchers.IO) {
+            clm.waitForUpdate()
+            var guard = 0
+            while (clm.isInUpdate() && guard++ < MAX_SETTLE_DRAINS) clm.waitForUpdate()
+        }
     }
 
     /** Build a unified diff for [changes] via the IDE patch builder, capped at [MAX_DIFF_BYTES]. */
@@ -418,5 +541,11 @@ class ChangelistToolset : McpToolset {
         const val MAX_DIFF_BYTES = 200 * 1024
         const val MAX_TRACKER_POLLS = 30
         const val TRACKER_POLL_MS = 100L
+
+        /** Bounded drains of trailing updates when settling the changelist pipeline to quiescence. */
+        const val MAX_SETTLE_DRAINS = 5
+
+        /** Bounded attempts to verify + reapply a mutation that a trailing update reverted. */
+        const val MAX_REAPPLY = 3
     }
 }
