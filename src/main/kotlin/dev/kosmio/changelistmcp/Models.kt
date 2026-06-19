@@ -70,7 +70,10 @@ data class RefreshResult(val refreshed: Boolean)
 @Serializable
 data class CommentResult(val name: String, val comment: String)
 
-/** A 1-based, inclusive current-file line range, as read from the `+` side of a diff hunk header. */
+/**
+ * A 1-based, inclusive line range read from a diff hunk. In `move_lines_to_changelist`, `lineRanges`
+ * uses current-file (`+` side) numbers and `deletedLineRanges` uses old-file (`-` side) numbers.
+ */
 @Serializable
 data class LineRange(val start: Int, val end: Int)
 

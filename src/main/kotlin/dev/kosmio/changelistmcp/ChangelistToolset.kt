@@ -219,19 +219,27 @@ class ChangelistToolset : McpToolset {
     @McpDescription(
         "Move only specific line ranges (hunks) of a single file into an EXISTING changelist, leaving " +
             "the file's other changes where they are. Use this when a file contains changes from more " +
-            "than one source (e.g. parallel sessions): read get_changelist_diff to find the line numbers " +
-            "of YOUR hunks (the '+' side of each '@@' header), then move just those. Line numbers are " +
-            "1-based and refer to the current file. Each hunk that overlaps a requested range is moved. " +
-            "Fails if the target changelist is missing (never auto-created) or read-only. If the file " +
-            "cannot be partially tracked, use move_to_changelist to move the whole file instead.",
+            "than one source (e.g. parallel sessions): read get_changelist_diff to find your hunks, then " +
+            "move just those. For ADDED or MODIFIED hunks, pass lineRanges = the 1-based CURRENT-file line " +
+            "numbers (the '+' side of each '@@ -a,b +c,d @@' header). For PURE DELETION hunks (only '-' " +
+            "lines, no '+' line to point at), pass deletedLineRanges = the 1-based OLD-file line numbers of " +
+            "the removed lines (count up from 'a' in the '@@ -a,b +c,d @@' header). Each hunk that overlaps " +
+            "a requested range on its matching side is moved. Fails if the target changelist is missing " +
+            "(never auto-created) or read-only. If the file cannot be partially tracked, use " +
+            "move_to_changelist to move the whole file instead.",
     )
     suspend fun move_lines_to_changelist(
         @McpDescription("Name of the existing target changelist.") name: String,
         @McpDescription("Project-relative path of the file whose hunks to move.") file: String,
-        @McpDescription("1-based, inclusive current-file line ranges to move (from the diff's '+' side).") lineRanges: List<LineRange>,
+        @McpDescription("1-based, inclusive CURRENT-file line ranges to move (the diff's '+' side) — for added/modified hunks. May be empty if you are only moving deletions via deletedLineRanges.") lineRanges: List<LineRange>,
+        @McpDescription("1-based, inclusive OLD-file line ranges to move (the diff's '-' side) — use this to target PURE DELETION hunks, which have no '+' line. Optional; omit when there are no deletions to move.") deletedLineRanges: List<LineRange>? = null,
     ): MoveLinesResult {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
+        val deleted = deletedLineRanges ?: emptyList()
+        if (lineRanges.isEmpty() && deleted.isEmpty()) {
+            mcpFail("Provide at least one range in lineRanges (current-file '+' lines) or deletedLineRanges (old-file '-' lines)")
+        }
         val vFile = LocalFileSystem.getInstance().findFileByPath("$basePath/$file")
             ?: mcpFail("File '$file' not found")
         if (!ensurePartialTracker(project, vFile)) {
@@ -255,13 +263,22 @@ class ChangelistToolset : McpToolset {
             val ranges = tracker.getRanges().orEmpty()
             val movedHunks = mutableListOf<MovedHunk>()
             val matched = BooleanArray(lineRanges.size)
+            val matchedDeleted = BooleanArray(deleted.size)
             val toMove = mutableListOf<Range>()
             ranges.forEach { r ->
                 var hit = false
+                // Added/modified hunks are targeted by their current-file ('+' side) lines.
                 lineRanges.forEachIndexed { j, req ->
                     if (rangeOverlaps(r, req.start, req.end)) {
                         hit = true
                         matched[j] = true
+                    }
+                }
+                // Pure deletions (and the deleted side of modifications) are targeted by old-file ('-') lines.
+                deleted.forEachIndexed { j, req ->
+                    if (vcsRangeOverlaps(r, req.start, req.end)) {
+                        hit = true
+                        matchedDeleted[j] = true
                     }
                 }
                 if (hit) {
@@ -272,7 +289,9 @@ class ChangelistToolset : McpToolset {
             // Move each matched hunk by its Range. Reassigning a hunk's changelist doesn't change line
             // content, so the remaining Range objects stay valid across the loop.
             for (range in toMove) tracker.moveToChangelist(range, target)
-            val unmatched = lineRanges.filterIndexed { j, _ -> !matched[j] }.map { "${it.start}-${it.end}" }
+            // Report requested ranges that matched no hunk; deleted-side ranges are prefixed "-" to distinguish.
+            val unmatched = lineRanges.filterIndexed { j, _ -> !matched[j] }.map { "${it.start}-${it.end}" } +
+                deleted.filterIndexed { j, _ -> !matchedDeleted[j] }.map { "-${it.start}..${it.end}" }
             MoveLinesResult(file = file, targetChangelist = name, movedHunks = movedHunks, unmatchedRanges = unmatched)
         }
     }
@@ -303,7 +322,7 @@ class ChangelistToolset : McpToolset {
         return readAction { ltm.getLineStatusTracker(vFile) } is PartialLocalLineStatusTracker
     }
 
-    /** Whether hunk [range]'s current-file span overlaps the 1-based inclusive [reqStart]..[reqEnd]. */
+    /** Whether hunk [range]'s current-file ('+' side) span overlaps the 1-based inclusive [reqStart]..[reqEnd]. */
     private fun rangeOverlaps(range: Range, reqStart: Int, reqEnd: Int): Boolean {
         val hasLines = range.line2 > range.line1
         // Tracker lines are 0-based half-open [line1, line2); convert to 1-based inclusive. A pure deletion
@@ -313,9 +332,24 @@ class ChangelistToolset : McpToolset {
         return reqStart <= end && start <= reqEnd
     }
 
-    /** Human-readable 1-based span of a hunk, e.g. "10-14" or "10(deletion)". */
-    private fun formatSpan(range: Range): String =
-        if (range.line2 > range.line1) "${range.line1 + 1}-${range.line2}" else "${range.line1}(deletion)"
+    /**
+     * Whether hunk [range]'s old-file ('-' side) span overlaps the 1-based inclusive [reqStart]..[reqEnd].
+     * This is how PURE DELETION hunks (which occupy no current-file lines) — and the deleted side of a
+     * modification — are targeted. vcsLine1..vcsLine2 are 0-based half-open old-file lines.
+     */
+    private fun vcsRangeOverlaps(range: Range, reqStart: Int, reqEnd: Int): Boolean {
+        if (!range.hasVcsLines()) return false
+        val start = range.vcsLine1 + 1
+        val end = range.vcsLine2
+        return reqStart <= end && start <= reqEnd
+    }
+
+    /** Human-readable 1-based span of a hunk: "10-14" (current file) or "-8..9 (deleted)" (old file). */
+    private fun formatSpan(range: Range): String = when {
+        range.line2 > range.line1 -> "${range.line1 + 1}-${range.line2}"
+        range.hasVcsLines() -> "-${range.vcsLine1 + 1}..${range.vcsLine2} (deleted)"
+        else -> "${range.line1}(deletion)"
+    }
 
 
     /** Outcome of partitioning a set of requested paths in [moveFilesInto]. */
