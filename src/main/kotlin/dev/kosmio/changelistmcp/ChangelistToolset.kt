@@ -108,12 +108,13 @@ class ChangelistToolset : McpToolset {
     }
 
     @McpTool
-    @McpDescription("Create a new changelist and optionally move the listed files into it. Currently-modified files are moved; unversioned (new) files are scheduled for addition (add-to-VCS) into the new changelist and reported in addedFiles. Files that are neither modified nor unversioned, or not found, are reported in skippedFiles; the call still succeeds.")
+    @McpDescription("Create a new changelist and optionally move the listed files into it. Currently-modified files are moved whole; unversioned (new) files are scheduled for addition (add-to-VCS) into the new changelist and reported in addedFiles (not when `from` is set — see below). A file whose hunks are SPLIT across several changelists is refused with reason split_across_changelists (remainingIn names its holders), because moving it whole would drag along hunks you did not claim — pass `from` to take only the hunks one changelist holds, or use move_lines_to_changelist for hunk-level precision. movedFiles reports only what actually landed. Files that are neither modified nor unversioned, or not found, are reported in skippedFiles; the call still succeeds.")
     suspend fun create_changelist(
         @McpDescription("Name for the new changelist.") name: String,
         @McpDescription("Optional description/comment for the changelist.") comment: String? = null,
         @McpDescription("Optional project-relative file paths to put into the new changelist (modified files are moved, new files are added).") files: List<String>? = null,
         @McpDescription("If true, make the new changelist the active (default) one.") setActive: Boolean = false,
+        @McpDescription("Optional name of the changelist to take the changes FROM. It is a strict filter over every path in `files`: ONLY what that changelist holds moves. A file it does not hold is skipped with reason not_in_source — including a file that sits entirely in some other changelist, and including a new/unversioned file, which no changelist holds (so a scoped call never schedules one for addition). On a file split across changelists, only its hunks in `from` move and the rest stay put. Must name an existing changelist, and must differ from the target. Omit to move whole files, which then refuses split files.") from: String? = null,
     ): CreateResult {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
@@ -125,15 +126,16 @@ class ChangelistToolset : McpToolset {
             val newList = clm.addChangeList(name, comment ?: "")
             if (setActive) clm.setDefaultChangeList(newList)
         }
-        val outcome = putFilesInto(project, clm, basePath, name, files ?: emptyList())
+        val outcome = putFilesInto(project, clm, basePath, name, files ?: emptyList(), from)
         return CreateResult(name = name, movedFiles = outcome.moved, addedFiles = outcome.added, skippedFiles = outcome.skipped)
     }
 
     @McpTool
-    @McpDescription("Put files into an EXISTING changelist. Currently-modified files are moved; unversioned (new) files are scheduled for addition (add-to-VCS) into it and reported in addedFiles. Fails if the target changelist does not exist (it is never auto-created) or is read-only. Files that are neither modified nor unversioned, or not found, are reported in skippedFiles.")
+    @McpDescription("Put files into an EXISTING changelist. Currently-modified files are moved whole; unversioned (new) files are scheduled for addition (add-to-VCS) into it and reported in addedFiles (not when `from` is set — see below). A file whose hunks are SPLIT across several changelists is refused with reason split_across_changelists (remainingIn names its holders), because moving it whole would drag along hunks you did not claim — typically a parallel session's. For a split file either pass `from` to take only the hunks one changelist holds, or use move_lines_to_changelist for hunk-level precision. movedFiles reports only what actually landed. Fails if the target changelist does not exist (it is never auto-created) or is read-only. Files that are neither modified nor unversioned, or not found, are reported in skippedFiles.")
     suspend fun move_to_changelist(
         @McpDescription("Name of the existing target changelist.") name: String,
         @McpDescription("Project-relative file paths to put into the target changelist (modified files are moved, new files are added).") files: List<String>,
+        @McpDescription("Optional name of the changelist to take the changes FROM. It is a strict filter over every path in `files`: ONLY what that changelist holds moves. A file it does not hold is skipped with reason not_in_source — including a file that sits entirely in some other changelist, and including a new/unversioned file, which no changelist holds (so a scoped call never schedules one for addition). On a file split across changelists, only its hunks in `from` move and the rest stay put. Must name an existing changelist, and must differ from the target. Omit to move whole files, which then refuses split files.") from: String? = null,
     ): MoveResult {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
@@ -143,7 +145,7 @@ class ChangelistToolset : McpToolset {
                 ?: mcpFail("Changelist '$name' not found — refusing to auto-create it")
             if (target.isReadOnly) mcpFail("Changelist '$name' is read-only — refusing to write into a frozen changelist")
         }
-        val outcome = putFilesInto(project, clm, basePath, name, files)
+        val outcome = putFilesInto(project, clm, basePath, name, files, from)
         return MoveResult(movedFiles = outcome.moved, addedFiles = outcome.added, skippedFiles = outcome.skipped)
     }
 
@@ -363,8 +365,16 @@ class ChangelistToolset : McpToolset {
      * Put each project-relative path into the changelist named [targetName]: any tracked change
      * (modified / added / deleted / moved) is moved by its [Change]; unversioned (new) files are scheduled
      * for addition (add-to-VCS). Partitions into moved / added / skipped (not_found / not_modified /
-     * source_readonly / add_failed). Resolution is by the change set keyed on path, so deleted and moved
-     * files — which have no live VirtualFile — resolve correctly.
+     * source_readonly / add_failed / split_across_changelists / not_in_source / move_incomplete).
+     * Resolution is by the change set keyed on path, so deleted and moved files — which have no live
+     * VirtualFile — resolve correctly.
+     *
+     * [sourceName] scopes the whole call to one changelist's changes, uniformly: every path is kept only
+     * if that changelist holds it, so a file living entirely in another changelist and a new file (which
+     * no changelist holds) are both skipped as not_in_source. It is what makes a file split across
+     * changelists tractable — only the hunks that changelist holds move, the others stay where they are.
+     * Without it a split file is refused rather than consolidated, since moving it whole would relocate
+     * hunks the caller never claimed.
      *
      * Three phases: (1a) classify the requested paths under a read action; (1b) move tracked changes on
      * the ChangeListManager updater thread (via [moveByPaths]) so the move is serialized with the update
@@ -380,7 +390,11 @@ class ChangelistToolset : McpToolset {
         basePath: String,
         targetName: String,
         files: List<String>,
+        sourceName: String?,
     ): MoveOutcome {
+        if (sourceName == targetName) {
+            mcpFail("Source and target changelist are both '$targetName' — nothing to move")
+        }
         val lfs = LocalFileSystem.getInstance()
         val moved = mutableListOf<String>()
         val added = mutableListOf<String>()
@@ -392,27 +406,40 @@ class ChangelistToolset : McpToolset {
         // original path has no live VirtualFile, so findFileByPath would wrongly report them not_found.
         readAction {
             if (clm.changeLists.none { it.name == targetName }) mcpFail("Changelist '$targetName' not found")
-            val changeByPath = currentChangeByPath(clm, basePath)
+            if (sourceName != null && clm.changeLists.none { it.name == sourceName }) {
+                mcpFail("Source changelist '$sourceName' not found")
+            }
+            val changesByPath = currentChangesByPath(clm, basePath)
             for (rel in files) {
-                val change = changeByPath[rel]
-                if (change != null) {
-                    val sourceList = clm.getChangeList(change)
-                    if (sourceList != null && sourceList.isReadOnly) {
-                        skipped += SkippedFile(rel, "source_readonly")
-                    } else {
-                        moved += rel
+                val held = changesByPath[rel]
+                if (!held.isNullOrEmpty()) {
+                    val holders = held.map { it.listName }.distinct()
+                    // Which of the path's changes this call is allowed to touch: the ones held by
+                    // sourceName, or all of them when no source was named.
+                    val relevant = if (sourceName == null) held else held.filter { it.listName == sourceName }
+                    when {
+                        // A file split across changelists is ambiguous without a source: moving it whole
+                        // would drag along hunks this caller never claimed (typically a parallel session's).
+                        sourceName == null && holders.size > 1 ->
+                            skipped += SkippedFile(rel, "split_across_changelists", holders)
+                        relevant.isEmpty() -> skipped += SkippedFile(rel, "not_in_source", holders)
+                        relevant.any { it.listIsReadOnly } -> skipped += SkippedFile(rel, "source_readonly")
+                        else -> moved += rel
                     }
                     continue
                 }
                 // Not a tracked change → either an unversioned new file (schedule for addition) or unknown.
+                // No changelist holds an unversioned file, so a call scoped to one cannot claim it either:
+                // sourceName filters uniformly, tracked change or not.
                 val vFile = lfs.findFileByPath("$basePath/$rel")
                 when {
                     vFile == null -> skipped += SkippedFile(rel, "not_found")
-                    clm.isUnversioned(vFile) -> {
+                    !clm.isUnversioned(vFile) -> skipped += SkippedFile(rel, "not_modified")
+                    sourceName != null -> skipped += SkippedFile(rel, "not_in_source", emptyList())
+                    else -> {
                         toAdd += vFile
                         added += rel
                     }
-                    else -> skipped += SkippedFile(rel, "not_modified")
                 }
             }
         }
@@ -420,7 +447,7 @@ class ChangelistToolset : McpToolset {
         // Phase 1b: move the tracked changes on the updater thread, serialized with the update pipeline so
         // a trailing/racing update (from an external-edit VFS refresh) cannot rebuild the worker from a
         // seed snapshot that predates the move.
-        if (moved.isNotEmpty()) moveByPaths(clm, basePath, targetName, moved)
+        if (moved.isNotEmpty()) moveByPaths(clm, basePath, targetName, moved, sourceName)
 
         // Phase 2: schedule unversioned files for addition — synchronous, off-EDT, no write lock, no modal.
         if (toAdd.isNotEmpty()) {
@@ -441,17 +468,36 @@ class ChangelistToolset : McpToolset {
         }
 
         // Phase 3: settle the pipeline and verify the moved files actually landed in the target; reapply
-        // any that a trailing update reverted. Bounded — best-effort if some still won't stick.
-        if (moved.isNotEmpty()) verifyMovedOrReapply(clm, basePath, targetName, moved)
+        // any that a trailing update reverted. Bounded — whatever the source still holds is demoted from
+        // moved to skipped, so the result reports what really moved.
+        if (moved.isNotEmpty()) {
+            val stuck = verifyMovedOrReapply(clm, basePath, targetName, moved, sourceName)
+            if (stuck.isNotEmpty()) {
+                moved.removeAll(stuck.keys)
+                skipped += stuck.map { (rel, elsewhere) -> SkippedFile(rel, "move_incomplete", elsewhere) }
+            }
+        }
 
         return MoveOutcome(moved, added, skipped)
     }
 
-    /** Index every current change by project-relative path. Requires read access (call inside a read action). */
-    private fun currentChangeByPath(clm: ChangeListManagerImpl, basePath: String): Map<String, Change> {
-        val map = HashMap<String, Change>()
+    /** One of a path's changes, together with the changelist holding it. */
+    private data class HeldChange(val listName: String, val listIsReadOnly: Boolean, val change: Change)
+
+    /**
+     * Index every current change by project-relative path, keeping ALL of a path's changes rather than
+     * one per path. A file whose hunks are split across changelists (partial changelists) appears once
+     * per holding list, and each of those entries is a distinct `ChangeListChange` carrying its own list
+     * id — the platform's whole-file move only relocates the hunks of the list a given entry names, so
+     * every entry is needed to move the file as a whole. Requires read access (call inside a read action).
+     */
+    private fun currentChangesByPath(clm: ChangeListManagerImpl, basePath: String): Map<String, List<HeldChange>> {
+        val map = HashMap<String, MutableList<HeldChange>>()
         for (list in clm.changeLists) {
-            for (change in list.changes) map[relativize(basePath, change)] = change
+            for (change in list.changes) {
+                map.getOrPut(relativize(basePath, change)) { mutableListOf() } +=
+                    HeldChange(list.name, list.isReadOnly, change)
+            }
         }
         return map
     }
@@ -460,48 +506,62 @@ class ChangelistToolset : McpToolset {
      * Move the changes for [paths] into [targetName] on the ChangeListManager updater thread. Change
      * objects are re-resolved by path INSIDE the runnable (under a read action) so we never act on
      * instances cached across the suspension, and the move cannot interleave with an update's
-     * snapshot/rebuild. A missing target list inside the runnable is a no-op (validated by the caller).
+     * snapshot/rebuild. When [sourceName] is set only the changes that changelist holds are passed, which
+     * is what makes the platform relocate just its hunks of a split file. A missing target list inside the
+     * runnable is a no-op (validated by the caller).
      */
     private suspend fun moveByPaths(
         clm: ChangeListManagerImpl,
         basePath: String,
         targetName: String,
         paths: List<String>,
+        sourceName: String?,
     ) {
         onUpdaterThread(clm) {
             ApplicationManager.getApplication().runReadAction(Runnable {
                 val target = clm.changeLists.firstOrNull { it.name == targetName } ?: return@Runnable
-                val byPath = currentChangeByPath(clm, basePath)
-                val toMove = paths.mapNotNull { byPath[it] }
+                val byPath = currentChangesByPath(clm, basePath)
+                val toMove = paths
+                    .flatMap { byPath[it].orEmpty() }
+                    .filter { sourceName == null || it.listName == sourceName }
+                    .map { it.change }
                 if (toMove.isNotEmpty()) clm.moveChangesTo(target, *toMove.toTypedArray())
             })
         }
     }
 
     /**
-     * Settle the pipeline and confirm each path in [moved] is now in [targetName]; reapply any that
-     * regressed. Bounded by [MAX_REAPPLY]. A path whose change has since disappeared is not a regression.
+     * Settle the pipeline and confirm the changes this call claimed have left their source; reapply any
+     * that regressed. Bounded by [MAX_REAPPLY]. With [sourceName] set, a path is done once that changelist
+     * no longer holds it — the changelists this call never claimed keep their hunks, which is the point of
+     * a scoped move, not a failure. Without a source, only unsplit files reach this point, so being held
+     * anywhere but the target is a regression. A path whose change has since disappeared is not one.
+     * Returns the paths that did not land, mapped to the changelists still holding them.
      */
     private suspend fun verifyMovedOrReapply(
         clm: ChangeListManagerImpl,
         basePath: String,
         targetName: String,
         moved: List<String>,
-    ) {
-        var pending = moved
+        sourceName: String?,
+    ): Map<String, List<String>> {
+        var pending = moved.associateWith { emptyList<String>() }
         var attempt = 0
         while (true) {
             settle(clm)
             pending = readAction {
-                val byPath = currentChangeByPath(clm, basePath)
-                pending.filter { rel ->
-                    val change = byPath[rel] ?: return@filter false // change gone → nothing to reassert
-                    clm.getChangeList(change)?.name != targetName
-                }
+                val byPath = currentChangesByPath(clm, basePath)
+                pending.keys.mapNotNull { rel ->
+                    val stillHolding = byPath[rel].orEmpty()
+                        .map { it.listName }
+                        .filter { if (sourceName != null) it == sourceName else it != targetName }
+                    if (stillHolding.isEmpty()) null else rel to stillHolding.distinct()
+                }.toMap()
             }
             if (pending.isEmpty() || ++attempt >= MAX_REAPPLY) break
-            moveByPaths(clm, basePath, targetName, pending)
+            moveByPaths(clm, basePath, targetName, pending.keys.toList(), sourceName)
         }
+        return pending
     }
 
     /**

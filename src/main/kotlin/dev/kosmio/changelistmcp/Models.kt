@@ -31,9 +31,20 @@ data class ChangelistsResult(
 @Serializable
 data class DiffResult(val name: String, val unifiedDiff: String)
 
-/** A file that could not be moved, with a machine-readable [reason]. */
+/**
+ * A file that could not be moved, with a machine-readable [reason]. [remainingIn] names the changelists
+ * holding the file's changes, for the reasons that turn on where those changes live:
+ * `split_across_changelists` (all its holders), `not_in_source` (the changelists that do hold it),
+ * `move_incomplete` (what still holds it after the move).
+ */
 @Serializable
-data class SkippedFile(val path: String, val reason: String) // not_modified | not_found | source_readonly
+data class SkippedFile(
+    val path: String,
+    // not_modified | not_found | source_readonly | add_failed
+    // | split_across_changelists | not_in_source | move_incomplete
+    val reason: String,
+    val remainingIn: List<String>? = null,
+)
 
 /**
  * Result for `move_to_changelist`. [addedFiles] are previously-unversioned files that were scheduled

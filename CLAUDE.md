@@ -70,6 +70,16 @@ commits in IntelliJ.
 - **Resolve requested paths against the change set, not the VFS.** Deleted and moved files have no live
   `VirtualFile`, so `findFileByPath` returns null and a naive resolver wrongly skips them. Index
   `ChangeListManager`'s changes by project-relative path; only fall back to a VFS + `isUnversioned` check for new files.
+- **`LocalChangeList.getChanges()` yields one `ChangeListChange` per holding list**, and
+  `ChangeListWorker.moveChangesTo` relocates only the hunks of the list that entry names. That is the whole
+  mechanism behind the `from` parameter: pass the entry whose list is `from` and just its hunks move. It is
+  also the trap — indexing the changes by path with last-one-wins hands the platform an entry already in the
+  target, which moves nothing and still looks like it succeeded. Verify a move by checking the source no
+  longer holds the path, never by re-reading the change you passed.
+- **A file split across changelists is refused by the whole-file tools, not consolidated.** Passing every
+  entry to `moveChangesTo` *would* consolidate it, and that is deliberately not what happens: the hunks in
+  the other changelists usually belong to a parallel session. Callers scope with `from` or go hunk-level
+  with `move_lines_to_changelist`.
 - **`set_changelist_comment` pre-fills the commit dialog only for a NAMED changelist.** The default ("Changes")
   ignores its description — the dialog shows the last commit message instead. Always group into a named changelist.
 - **Agent file edits bypass IntelliJ's VFS.** Anything written to disk outside the IDE is invisible until a

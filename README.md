@@ -35,8 +35,8 @@ This plugin closes both gaps while keeping commit & push firmly in your hands.
 | `list_changelists` | — | Read every local changelist with its files (project-relative paths; `changeType` ∈ MODIFIED/ADDED/DELETED/MOVED), plus `isDefault`/`isReadOnly`, and the project's `unversionedFiles` (new, not-yet-tracked files). |
 | `refresh_changelists` | — | Re-scan the working tree and recompute changelist state. **Call this after editing files outside the IDE** (e.g. via Claude's own tools), before `list_changelists` — IntelliJ doesn't see external edits until it refreshes. |
 | `get_changelist_diff` | `name` | Unified diff for one changelist (capped at 200 KB), for drafting a commit message. |
-| `create_changelist` | `name`, `comment?`, `files?`, `setActive?` | Create a changelist and put files into it: modified files are moved; **unversioned (new) files are scheduled for addition** and reported in `addedFiles`. Non-matching / missing files go to `skippedFiles`; the call still succeeds. |
-| `move_to_changelist` | `name`, `files` | Put files into an **existing** changelist (modified → moved, new → scheduled for addition / `addedFiles`). Fails if the changelist is missing (never auto-creates) or read-only. |
+| `create_changelist` | `name`, `comment?`, `files?`, `setActive?`, `from?` | Create a changelist and put files into it: modified files are moved **whole**; **unversioned (new) files are scheduled for addition** and reported in `addedFiles`. Non-matching / missing files go to `skippedFiles`; the call still succeeds. |
+| `move_to_changelist` | `name`, `files`, `from?` | Put files into an **existing** changelist (modified → moved whole, new → scheduled for addition / `addedFiles`). `from` scopes the move to one changelist's changes — see [Parallel sessions](#parallel-sessions). `movedFiles` reports only what actually landed; everything else comes back in `skippedFiles` with a reason (`split_across_changelists`, `not_in_source`, `move_incomplete`, …) and `remainingIn`. Fails if the changelist is missing (never auto-creates) or read-only. |
 | `move_lines_to_changelist` | `name`, `file`, `lineRanges` | Move only specific **hunks** of one file into an existing changelist, leaving its other changes in place. See [Parallel sessions](#parallel-sessions). |
 | `set_changelist_comment` | `name`, `comment` | Set a changelist's comment, which IntelliJ uses as the **default commit message** — so the commit dialog is pre-filled. **Use a *named* changelist:** the default `Changes` ignores its comment (the dialog shows the last commit message instead). |
 | `delete_changelist` | `name`, `moveContentsTo?` | Delete a changelist, relocating its files first (default target `"Default"`). Refuses to delete `Default`. |
@@ -59,17 +59,24 @@ All five register through a single `McpToolset`; they appear alongside the IDE's
 ### Parallel sessions
 
 When several agent sessions share one working tree, a single file can hold changes from more than one
-session. The whole-file tools (`create_changelist` / `move_to_changelist`) must not be used on such a file —
-they'd drag another session's work along. Instead:
+session, and its hunks end up spread over several changelists. Moving such a file whole would drag another
+session's work along, so the whole-file tools refuse it: it comes back in `skippedFiles` as
+`split_across_changelists`, with `remainingIn` naming every changelist holding a piece. Two ways forward:
 
-- Read `get_changelist_diff` to find the line numbers of *your* hunks (the `+` side of each `@@` header).
-- Call `move_lines_to_changelist(name, file, lineRanges)` with those 1-based line ranges. Only the hunks
-  overlapping your ranges move; the rest stay put.
+- **`from`** — `move_to_changelist(name, files, from = "Changes")` takes only the changes that changelist
+  holds. The hunks sitting in other changelists stay exactly where they are. Use this when your work is
+  cleanly separated by changelist and you just want to relabel your bucket. `from` filters the whole call
+  uniformly: anything it does not hold is skipped as `not_in_source` — a file that lives entirely in
+  another changelist, and a new/unversioned file, which no changelist holds (so a scoped call never
+  schedules one for addition; do that in a separate unscoped call).
+- **`move_lines_to_changelist`** — hunk-level precision when it is not. Read `get_changelist_diff` to find
+  the line numbers of *your* hunks (the `+` side of each `@@` header) and pass those 1-based ranges. Only
+  the hunks overlapping your ranges move; the rest stay put.
 
-This relies on IntelliJ's partial-changelist (per-hunk) tracking. It's best-effort: tracker initialization is
-asynchronous and hunk boundaries come from a slightly different diff engine than the unified diff, so rare
-edge cases may move a neighbouring hunk. The result reports exactly which hunks moved and which requested
-ranges matched nothing.
+Both ride on IntelliJ's partial-changelist (per-hunk) tracking. `move_lines_to_changelist` is best-effort:
+tracker initialization is asynchronous and hunk boundaries come from a slightly different diff engine than
+the unified diff, so rare edge cases may move a neighbouring hunk. Its result reports exactly which hunks
+moved and which requested ranges matched nothing.
 
 ## Build
 
