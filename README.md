@@ -41,7 +41,7 @@ This plugin closes both gaps while keeping commit & push firmly in your hands.
 | `set_changelist_comment` | `name`, `comment` | Set a changelist's comment, which IntelliJ uses as the **default commit message** — so the commit dialog is pre-filled. **Use a *named* changelist:** the default `Changes` ignores its comment (the dialog shows the last commit message instead). |
 | `delete_changelist` | `name`, `moveContentsTo?` | Delete a changelist, relocating its files first (default target `"Default"`). Refuses to delete `Default`. |
 
-All five register through a single `McpToolset`; they appear alongside the IDE's built-in MCP tools.
+They register through a single `McpToolset`; they appear alongside the IDE's built-in MCP tools.
 
 ## Intended workflow
 

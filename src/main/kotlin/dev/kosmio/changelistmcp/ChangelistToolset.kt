@@ -488,8 +488,8 @@ class ChangelistToolset : McpToolset {
      * Index every current change by project-relative path, keeping ALL of a path's changes rather than
      * one per path. A file whose hunks are split across changelists (partial changelists) appears once
      * per holding list, and each of those entries is a distinct `ChangeListChange` carrying its own list
-     * id — the platform's whole-file move only relocates the hunks of the list a given entry names, so
-     * every entry is needed to move the file as a whole. Requires read access (call inside a read action).
+     * id — the platform relocates only the hunks of the list a given entry names, so which entries are
+     * passed decides what moves. Requires read access (call inside a read action).
      */
     private fun currentChangesByPath(clm: ChangeListManagerImpl, basePath: String): Map<String, List<HeldChange>> {
         val map = HashMap<String, MutableList<HeldChange>>()
@@ -533,8 +533,7 @@ class ChangelistToolset : McpToolset {
     /**
      * Settle the pipeline and confirm the changes this call claimed have left their source; reapply any
      * that regressed. Bounded by [MAX_REAPPLY]. With [sourceName] set, a path is done once that changelist
-     * no longer holds it — the changelists this call never claimed keep their hunks, which is the point of
-     * a scoped move, not a failure. Without a source, only unsplit files reach this point, so being held
+     * no longer holds it — the changelists this call never claimed keep their hunks. Without a source, only unsplit files reach this point, so being held
      * anywhere but the target is a regression. A path whose change has since disappeared is not one.
      * Returns the paths that did not land, mapped to the changelists still holding them.
      */

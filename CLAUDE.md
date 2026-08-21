@@ -76,10 +76,9 @@ commits in IntelliJ.
   also the trap — indexing the changes by path with last-one-wins hands the platform an entry already in the
   target, which moves nothing and still looks like it succeeded. Verify a move by checking the source no
   longer holds the path, never by re-reading the change you passed.
-- **A file split across changelists is refused by the whole-file tools, not consolidated.** Passing every
-  entry to `moveChangesTo` *would* consolidate it, and that is deliberately not what happens: the hunks in
-  the other changelists usually belong to a parallel session. Callers scope with `from` or go hunk-level
-  with `move_lines_to_changelist`.
+- **The whole-file tools refuse a file split across changelists rather than consolidating it.** Passing
+  every entry to `moveChangesTo` would consolidate it, but the hunks in the other changelists usually
+  belong to a parallel session. Callers scope with `from` or go hunk-level with `move_lines_to_changelist`.
 - **`set_changelist_comment` pre-fills the commit dialog only for a NAMED changelist.** The default ("Changes")
   ignores its description — the dialog shows the last commit message instead. Always group into a named changelist.
 - **Agent file edits bypass IntelliJ's VFS.** Anything written to disk outside the IDE is invisible until a
