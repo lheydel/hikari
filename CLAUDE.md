@@ -79,6 +79,12 @@ commits in IntelliJ.
 - **The whole-file tools refuse a file split across changelists rather than consolidating it.** Passing
   every entry to `moveChangesTo` would consolidate it, but the hunks in the other changelists usually
   belong to a parallel session. Callers scope with `from` or go hunk-level with `move_lines_to_changelist`.
+- **Tool results are re-read on every later request, so output size is a recurring cost.**
+  Results carry only what the caller cannot already derive: `list_changelists` reports a comment's first
+  line plus its length (the full text is one `get_changelist_comment` away), the move tools report
+  `movedCount` rather than echoing the paths that were passed in, and `set_changelist_comment` reports
+  whether the write stuck. `addedFiles`, `skippedFiles` and the diff stay in full — those are the
+  surprises. `SESSION_TOKEN_COST.md` has the measurements.
 - **`set_changelist_comment` pre-fills the commit dialog only for a NAMED changelist.** The default ("Changes")
   ignores its description — the dialog shows the last commit message instead. Always group into a named changelist.
 - **Agent file edits bypass IntelliJ's VFS.** Anything written to disk outside the IDE is invisible until a

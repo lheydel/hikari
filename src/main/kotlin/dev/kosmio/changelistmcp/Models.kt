@@ -6,11 +6,16 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class FileEntry(val path: String, val changeType: String)
 
-/** A single local changelist with its files and metadata. */
+/**
+ * A single local changelist with its files and metadata. Only the comment's first line is reported
+ * (truncated to 120 chars), with [commentLength] giving the full comment's length; read the whole
+ * comment with `get_changelist_comment`.
+ */
 @Serializable
 data class ChangelistInfo(
     val name: String,
-    val comment: String,
+    val commentFirstLine: String,
+    val commentLength: Int,
     val isDefault: Boolean,
     val isReadOnly: Boolean,
     val files: List<FileEntry>,
@@ -47,24 +52,26 @@ data class SkippedFile(
 )
 
 /**
- * Result for `move_to_changelist`. [addedFiles] are previously-unversioned files that were scheduled
- * for addition (add-to-VCS) into the target changelist.
+ * Result for `move_to_changelist`. [movedCount] counts the requested files that landed — which ones
+ * they are is the request minus [skippedFiles]. [addedFiles] are previously-unversioned files that
+ * were scheduled for addition (add-to-VCS) into the target changelist.
  */
 @Serializable
 data class MoveResult(
-    val movedFiles: List<String>,
+    val movedCount: Int,
     val addedFiles: List<String>,
     val skippedFiles: List<SkippedFile>,
 )
 
 /**
- * Result for `create_changelist`. [addedFiles] are previously-unversioned files that were scheduled
- * for addition (add-to-VCS) into the new changelist.
+ * Result for `create_changelist`. [movedCount] counts the requested files that landed — which ones
+ * they are is the request minus [skippedFiles]. [addedFiles] are previously-unversioned files that
+ * were scheduled for addition (add-to-VCS) into the new changelist.
  */
 @Serializable
 data class CreateResult(
     val name: String,
-    val movedFiles: List<String>,
+    val movedCount: Int,
     val addedFiles: List<String>,
     val skippedFiles: List<SkippedFile>,
 )
@@ -77,9 +84,13 @@ data class DeleteResult(val deleted: Boolean)
 @Serializable
 data class RefreshResult(val refreshed: Boolean)
 
-/** Result for `set_changelist_comment`. */
+/** Result for `set_changelist_comment`: [length] is the character count of the comment now on the list. */
 @Serializable
-data class CommentResult(val name: String, val comment: String)
+data class CommentResult(val applied: Boolean, val length: Int)
+
+/** Result for `get_changelist_comment`: the changelist's full comment. */
+@Serializable
+data class GetCommentResult(val name: String, val comment: String)
 
 /**
  * A 1-based, inclusive line range read from a diff hunk. In `move_lines_to_changelist`, `lineRanges`
