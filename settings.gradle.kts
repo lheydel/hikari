@@ -1,1 +1,1 @@
-rootProject.name = "intellij-changelist-mcp"
+rootProject.name = "intellij-mcp-powerup"

@@ -1,4 +1,4 @@
-package dev.kosmio.changelistmcp
+package dev.kosmio.mcppowerup.changelist
 
 import com.intellij.mcpserver.McpToolset
 import com.intellij.mcpserver.annotations.McpDescription

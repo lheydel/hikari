@@ -1,16 +1,20 @@
 # CLAUDE.md — working on this plugin
 
-A JetBrains plugin that contributes changelist tools to IntelliJ's **bundled** MCP server. See
-`README.md` for what it does, the tool surface, and install/connect steps — this file is for editing the
-code. Most of what's below is empirical: it was learned by hitting it, and is **not** visible from
+A JetBrains plugin, id `dev.kosmio.mcp-powerup`, that contributes tools to IntelliJ's **bundled** MCP
+server — today, changelist tools. See `README.md` for what it does, the tool surface, and install/connect
+steps — this file is for editing the code. Most of what's below is empirical: it was learned by hitting it, and is **not** visible from
 reading the source.
 
 ## Safety boundary (absolute)
 
-Read + organize only. **Never** add commit / push / stash / revert / shelve, or any tool that edits file
-contents — not even a private helper that could be wired up later. The *one* mutation the plugin makes is
-scheduling new (unversioned) files for addition (add-to-VCS) so they can be grouped. The user reviews and
-commits in IntelliJ.
+**Read and organize only — never mutate file contents or VCS state.** **Never** add commit / push / stash /
+revert / shelve, or any tool that edits file contents — not even a private helper that could be wired up
+later. The *one* mutation the plugin makes is scheduling new (unversioned) files for addition (add-to-VCS)
+so they can be grouped. The user reviews and commits in IntelliJ.
+
+The charter is per-plugin, not per-tool-family: it binds every tool this plugin ever contributes, whatever
+the concern. The name no longer says "changelist", so this paragraph is the only signal a session reading
+the plugin name gets.
 
 ## Build & test
 
@@ -19,7 +23,7 @@ commits in IntelliJ.
   building the same `build/` dir, the build cache fails to pack (`Could not get file mode …`). Not a code error.
 - **Always run `verifyPlugin`** — it binary-checks the plugin against the target IDE build(s) and catches API
   drift that compilation alone misses.
-- Artifact: `build/distributions/intellij-changelist-mcp-<version>.zip`.
+- Artifact: `build/distributions/intellij-mcp-powerup-<version>.zip`.
 - **Every code change needs a reinstall to test live**: Settings → Plugins → ⚙ → Install Plugin from Disk →
   the zip → **restart**. There is no hot reload. `./gradlew runIde` gives an isolated sandbox IDE instead.
 
@@ -35,7 +39,8 @@ commits in IntelliJ.
   `bundledModule("intellij.platform.vcs.impl")` (for `ChangeListManagerEx`, the patch builder, the
   line-status tracker, `ChangeListManagerImpl.editComment`); `bundledModule("intellij.platform.vcs.impl.shared")`
   (for `LocalRange`). `kotlinx-serialization-json` is `compileOnly` — the platform ships its own; bundling clashes.
-- The plugin id must **not** contain the word "intellij" (the verifier rejects it).
+- The plugin id must **not** contain the word "intellij" (the verifier rejects it) — hence
+  `dev.kosmio.mcp-powerup`. The repository name and the distribution archive name may.
 
 ## The MCP tool API (2026.1)
 
@@ -94,8 +99,8 @@ commits in IntelliJ.
 
 ## Source layout
 
-- `src/main/kotlin/dev/kosmio/changelistmcp/ChangelistToolset.kt` — the `McpToolset`, all tools, private helpers.
-- `src/main/kotlin/dev/kosmio/changelistmcp/Models.kt` — `@Serializable` result DTOs.
+- `src/main/kotlin/dev/kosmio/mcppowerup/changelist/ChangelistToolset.kt` — the changelist `McpToolset`, its tools, private helpers.
+- `src/main/kotlin/dev/kosmio/mcppowerup/changelist/Models.kt` — `@Serializable` result DTOs for the changelist tools.
 - `src/main/resources/META-INF/plugin.xml` — one `<mcpToolset>` registration.
 
 ## Inspecting platform APIs

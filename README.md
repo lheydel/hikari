@@ -1,13 +1,15 @@
-# Changelist MCP
+# MCP Powerup
 
-A JetBrains IDE plugin that exposes IntelliJ's **local changelists** to the IDE's built-in MCP
-server, so an MCP client (e.g. Claude Code) can read changelist state, draft commit messages from a
-changelist's diff, and organize modified files into changelists for you to review and commit.
+A JetBrains IDE plugin that adds tools to the IDE's built-in MCP server. It exposes IntelliJ's
+**local changelists**, so an MCP client (e.g. Claude Code) can read changelist state, draft commit
+messages from a changelist's diff, and organize modified files into changelists for you to review
+and commit.
 
-> **Read + organize only.** This plugin never commits, pushes, stashes, reverts, shelves, or edits file
-> contents. It reads changelist state and rearranges which changelist a change belongs to. To organize
-> *new* files it schedules them for addition (add-to-VCS) into a changelist — the git equivalent of
-> marking a new file to be tracked — but you still review and commit manually. That boundary is absolute.
+> **Read and organize only.** This plugin never mutates file contents or VCS state — it never commits,
+> pushes, stashes, reverts, shelves, or edits a file. It reads state and rearranges which changelist a
+> change belongs to. Scheduling *new* files for addition (add-to-VCS) into a changelist — the git
+> equivalent of marking a new file to be tracked — is the single exception, and you still review and
+> commit manually. That boundary is absolute, and it does not widen with the tool surface.
 
 ## Why
 
@@ -85,7 +87,7 @@ moved and which requested ranges matched nothing.
 ./gradlew buildPlugin
 ```
 
-Produces the installable archive at `build/distributions/intellij-changelist-mcp-<version>.zip`.
+Produces the installable archive at `build/distributions/intellij-mcp-powerup-<version>.zip`.
 
 Other useful tasks:
 
@@ -96,7 +98,11 @@ Other useful tasks:
 
 ## Install
 
-In your IDE: **Settings → Plugins → ⚙ → Install Plugin from Disk…**, pick the built `.zip`, and restart.
+If the older **Changelist MCP** plugin (id `dev.kosmio.changelist-mcp`) is still installed, uninstall it
+first and restart. The id changed with the rename, so the IDE treats this as a different plugin: with both
+installed, both register `list_changelists` and the MCP server sees a name collision at runtime.
+
+Then, in your IDE: **Settings → Plugins → ⚙ → Install Plugin from Disk…**, pick the built `.zip`, and restart.
 
 ## Connect an MCP client
 
@@ -136,8 +142,8 @@ The build targets a specific toolchain (each pinned for a concrete reason):
 Source layout:
 
 ```
-src/main/kotlin/dev/kosmio/changelistmcp/
-  ChangelistToolset.kt   # the McpToolset with all tool methods
+src/main/kotlin/dev/kosmio/mcppowerup/changelist/
+  ChangelistToolset.kt   # the McpToolset with all changelist tool methods
   Models.kt              # @Serializable result/DTO types
 src/main/resources/META-INF/plugin.xml
 ```
