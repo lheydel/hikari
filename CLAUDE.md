@@ -13,8 +13,8 @@ later. The *one* mutation the plugin makes is scheduling new (unversioned) files
 so they can be grouped. The user reviews and commits in IntelliJ.
 
 The charter is per-plugin, not per-tool-family: it binds every tool this plugin ever contributes, whatever
-the concern. The name no longer says "changelist", so this paragraph is the only signal a session reading
-the plugin name gets.
+the concern. The plugin name does not mention "changelist", so this paragraph is the only signal a session
+reading the plugin name gets.
 
 ## Build & test
 
@@ -44,11 +44,11 @@ the plugin name gets.
 
 ## The MCP tool API (2026.1)
 
-- One class implements the marker `com.intellij.mcpserver.McpToolset`; each tool is a `suspend fun` annotated
+- A class implements the marker `com.intellij.mcpserver.McpToolset`; each tool is a `suspend fun` annotated
   `@McpTool` + `@McpDescription`. Annotate **every parameter** too — those descriptions become the JSON schema.
 - Tool name = method name. Return an `@Serializable` data class (in `Models.kt`). Errors: `mcpFail("…")` (returns Nothing).
 - Project: `currentCoroutineContext().project` (import `com.intellij.mcpserver.project`).
-- Register all tools via the single `<mcpToolset>` in `plugin.xml`.
+- Register tools via an `<mcpToolset>` in `plugin.xml`.
 - The framework auto-injects a `projectPath` parameter into every tool — that's the multi-project/instance
   routing mechanism; don't declare it yourself.
 
@@ -69,6 +69,20 @@ the plugin name gets.
   `VcsDirtyScopeManager.getInstance(project).markEverythingDirty()` + `ChangeListManagerEx.waitForUpdate()`, all on
   `Dispatchers.IO`. It returns a bare confirmation, not counts: the unversioned-files list settles a beat after
   `waitForUpdate()`, so any count read in the same call is racy — callers read `list_changelists` afterward.
+- **Analysis reads: `smartReadAction(project) { }`, one small unit of work per call.** Not the plain
+  `readAction` the changelist tools use — reference search under `DumbService` returns nothing or throws
+  during the reindex a `refresh_changelists` triggers, and an empty result is indistinguishable from
+  "no callers". Both live in `com.intellij.openapi.application.ActionsKt`.
+  - The platform already retries: `smartReadAction` is cancelled and **restarted** when a write action
+    arrives, which is what `ReadAction$CannotReadException` reports. So the retry needs no code — but it
+    restarts the *whole lambda*, so a traversal wrapped in one read action can livelock against a user who
+    is typing. Wrap one node's search, not the traversal.
+  - `smartReadActionBlocking` is the non-cancellable variant: it makes the writer wait instead. Right for a
+    single short read, wrong for a traversal — it would stall the IDE's writes for the duration.
+  - **PSI does not survive the boundary.** A cancelling write can invalidate any element held across read
+    actions, so the frontier between units is `SmartPointerManager.createPointer(element)` (deref with
+    `SmartPsiElementPointer.getElement()`), or re-resolved from `{file, symbol}` coordinates. This is the
+    same rule as "never cache a `Change` across a suspension", for the same reason.
 
 ## Behavioral gotchas (verified live, not inferable from code)
 
@@ -97,11 +111,82 @@ the plugin name gets.
 - `editComment` is on the concrete `ChangeListManagerImpl` (`getInstanceImpl`), not the `ChangeListManager`/`…Ex`
   interfaces.
 
+## Traversal budgets (calibrated)
+
+Measured with `run_inspection_kts` against `~/Bazar/engineering/skeleton-kotlin-react`, indexed and warm
+except where noted.
+
+**The budget binds on output size, not on wall-clock.** A slow call costs the caller once; a large result is
+re-read on every later request in the session, which is the `carried` cost `SESSION_TOKEN_COST.md` measures.
+Serialising the same traversal both ways, at `chars / 4` per that document's convention:
+
+| Seed | Depth | Nodes | `tree` | `grouped` |
+|---|---:|---:|---:|---:|
+| `TransactionSpi.execute` | 1 | 65 | 15 612 c ≈ 3 903 t | 2 764 c ≈ **691 t** |
+| `TransactionSpi.execute` | 2 | 121 | 28 728 c ≈ 7 182 t | 4 504 c ≈ **1 126 t** |
+| `Button` | 1 | 43 | 7 002 c ≈ 1 750 t | 1 146 c ≈ **286 t** |
+| `Button` | 2 | 108 | 18 056 c ≈ 4 514 t | 2 128 c ≈ **532 t** |
+
+`grouped` runs 6–8× cheaper and carries the same caller set — it drops per-node paths, line numbers and tree
+structure, keeping module, counts and declaration names. So `grouped` is the default and the tool description
+steers callers to it; `tree` is opt-in, for when the file locations are the point.
+
+- **`format: grouped | tree` is a caller argument, not a mode the tool picks.** At `grouped` sizes, output
+  stops being the binding constraint at the depths that matter, so there is no width threshold at which the
+  traversal refuses to expand.
+- **Depth is the knob that bounds cost.** Warming does not rescue a wide traversal: `TransactionSpi.execute`
+  at depth 5 costs 23 854 ms with every index hot and still leaves 59 nodes unexpanded. Only the seed's own
+  search gets cheap warm (449 ms → 43 ms); every element found at depth pays its own first touch, so level 1
+  stays near 156 ms per search. Cost tracks distinct elements searched.
+- **Level 1 is cheap and always exhaustive** — 43 ms warm, 449 ms cold for the wide seed. Never cap it. It is
+  also the hop grep cannot reach: `ProjectCreateFeatureImpl.invoke` has zero textual references to its caller
+  and is reachable only through the port it overrides.
+- **A long read action gets cancelled.** `CannotReadException` killed the depth-5 wide traversal repeatedly
+  here; at tens of seconds, a write arriving mid-run is likely rather than rare. The platform retries this
+  for free — the constraint it puts on the design is granularity and PSI lifetime, in § *Threading*.
+- **A stopped run returns its frontier as re-seedable `{file, symbol}` pairs**, so a caller can continue
+  deterministically instead of receiving a silently partial answer. The same coordinates are what the
+  traversal re-resolves against after a cancelled unit, so resumability and cancellation-recovery are one
+  mechanism rather than two.
+- Seed distribution, for sizing: domain ports measure 1–3 first-level callers (`UserCommands.kt`, 13–366 ms
+  each); `TransactionSpi`'s own methods measure 68 / 5 / 2 / 1; the `ui` package's components run 0–43 raw
+  references, median around 10, with `Field` (162) and `Button` (171) above it.
+- Counts are of **callable** nodes, after the enclosing-declaration filter, not of raw references. `Button` is
+  171 raw references but 43 nodes.
+
+`DefinitionsScopedSearch` costs about what `ReferencesSearch` costs (2 ms against 6 ms on the same warm
+seed), so implementation lookup does not need its own cap.
+
+Fanning searches across cores buys little — 10 257 ms against 12 448 ms sequential on eleven cores, with the
+parallel pass run first so the warm advantage went to the sequential one. Measured inside an inspection's
+read action, which may serialise the children, so treat it as a lower bound rather than a settled ceiling.
+
+## Analysis tools — language-specific surfaces
+
+- **`PsiNameIdentifierOwner` is the language-neutral enclosing-declaration filter, and it needs no
+  per-language provider.** Nothing at platform level means "callable" — `TypeScriptFunctionImpl` carries only
+  `PsiElement`, `PsiNamedElement`, `PsiNameIdentifierOwner`, `NavigationItem`, `NavigatablePsiElement`,
+  `StubBasedPsiElement`, `PsiExternalReferenceHost` — but "callable" is not what the filter has to decide.
+  Excluding files and markup is, and `PsiNameIdentifierOwner` does exactly that: a `PsiFile` is not one, and
+  neither is a JSX literal. On the `Button` seed it yields `TypeScriptFunction`, `TypeScriptFunctionExpression`,
+  `TypeScriptVariable`, `JSProperty`, `JSDefinitionExpression` and no file or JSX node; the language-specific
+  `JSFunction` yields a strict subset of that, dropping variable- and property-bound components.
+- **`PsiNamedElement` is not a usable substitute.** A `PsiFile` is a `PsiNamedElement`, so a first-named-parent
+  filter reports files as callers — on the `Button` seed that is how a large share of its references resolve.
+  JSX literals resolve the same way.
+- **Require a non-null `name` on top of `PsiNameIdentifierOwner`.** On Kotlin the bare predicate also matches
+  `KtFunctionLiteral`, which is nameless and a dead end for further search; requiring a name removes it and
+  keeps the `KtProperty` nodes, which are real call sites.
+- **`TestSourcesFilter.isTestSources` classifies nothing in this project.** It returns false for every node of
+  the `TransactionSpi.execute` tree, including the step definitions, because they live in a Gradle *main*
+  source set at `platform/server/test/src/main/kotlin`. Test detection has to key on path or package, and it
+  is per-language: TypeScript tests sit beside their sources as `*.test.tsx`.
+
 ## Source layout
 
 - `src/main/kotlin/dev/kosmio/mcppowerup/changelist/ChangelistToolset.kt` — the changelist `McpToolset`, its tools, private helpers.
 - `src/main/kotlin/dev/kosmio/mcppowerup/changelist/Models.kt` — `@Serializable` result DTOs for the changelist tools.
-- `src/main/resources/META-INF/plugin.xml` — one `<mcpToolset>` registration.
+- `src/main/resources/META-INF/plugin.xml` — an `<mcpToolset>` registration.
 
 ## Inspecting platform APIs
 

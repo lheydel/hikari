@@ -14,14 +14,14 @@ and commit.
 ## Why
 
 A common flow is: the agent implements → you review the diffs in IntelliJ (per changelist, with
-granular per-line selection) → you commit in IntelliJ → you push. Two gaps make that awkward:
+granular per-line selection) → you commit in IntelliJ → you push. Gaps make that awkward:
 
 - `git diff` / `git diff --cached` doesn't reflect IntelliJ's changelist grouping (IntelliJ does partial
   commits without staging via the index), so the agent can't see "the files I'm about to commit as one unit."
 - You don't want to hand-sort implementation changes into changelists, and you don't want to copy/paste
   commit messages out of a chat.
 
-This plugin closes both gaps while keeping commit & push firmly in your hands.
+This plugin closes these gaps while keeping commit & push firmly in your hands.
 
 ## Requirements
 
@@ -44,7 +44,7 @@ This plugin closes both gaps while keeping commit & push firmly in your hands.
 | `set_changelist_comment` | `name`, `comment` | Set a changelist's comment, which IntelliJ uses as the **default commit message** — so the commit dialog is pre-filled. **Use a *named* changelist:** the default `Changes` ignores its comment (the dialog shows the last commit message instead). |
 | `delete_changelist` | `name`, `moveContentsTo?` | Delete a changelist, relocating its files first (default target `"Default"`). Refuses to delete `Default`. |
 
-They register through a single `McpToolset`; they appear alongside the IDE's built-in MCP tools.
+They register through a `McpToolset`; they appear alongside the IDE's built-in MCP tools.
 
 ## Intended workflow
 
@@ -64,7 +64,7 @@ They register through a single `McpToolset`; they appear alongside the IDE's bui
 When several agent sessions share one working tree, a single file can hold changes from more than one
 session, and its hunks end up spread over several changelists. Moving such a file whole would drag another
 session's work along, so the whole-file tools refuse it: it comes back in `skippedFiles` as
-`split_across_changelists`, with `remainingIn` naming every changelist holding a piece. Two ways forward:
+`split_across_changelists`, with `remainingIn` naming every changelist holding a piece. Ways forward:
 
 - **`from`** — `move_to_changelist(name, files, from = "Changes")` takes only the changes that changelist
   holds. The hunks sitting in other changelists stay exactly where they are. Use this when your work is
@@ -76,7 +76,7 @@ session's work along, so the whole-file tools refuse it: it comes back in `skipp
   the line numbers of *your* hunks (the `+` side of each `@@` header) and pass those 1-based ranges. Only
   the hunks overlapping your ranges move; the rest stay put.
 
-Both ride on IntelliJ's partial-changelist (per-hunk) tracking. `move_lines_to_changelist` is best-effort:
+Each rides on IntelliJ's partial-changelist (per-hunk) tracking. `move_lines_to_changelist` is best-effort:
 tracker initialization is asynchronous and hunk boundaries come from a slightly different diff engine than
 the unified diff, so rare edge cases may move a neighbouring hunk. Its result reports exactly which hunks
 moved and which requested ranges matched nothing.
@@ -99,7 +99,7 @@ Other useful tasks:
 ## Install
 
 If the older **Changelist MCP** plugin (id `dev.kosmio.changelist-mcp`) is still installed, uninstall it
-first and restart. The id changed with the rename, so the IDE treats this as a different plugin: with both
+first and restart: it has a different id, so the IDE treats it as a separate plugin, and with both
 installed, both register `list_changelists` and the MCP server sees a name collision at runtime.
 
 Then, in your IDE: **Settings → Plugins → ⚙ → Install Plugin from Disk…**, pick the built `.zip`, and restart.
