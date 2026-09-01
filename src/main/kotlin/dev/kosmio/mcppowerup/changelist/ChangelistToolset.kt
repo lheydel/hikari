@@ -17,7 +17,6 @@ import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.ChangeListManagerEx
 import com.intellij.openapi.vcs.changes.ChangeListManagerImpl
-import com.intellij.openapi.vcs.changes.ChangesUtil
 import com.intellij.openapi.vcs.changes.LocalChangeList
 import com.intellij.openapi.vcs.changes.VcsDirtyScopeManager
 import com.intellij.openapi.vcs.changes.actions.ScheduleForAdditionAction
@@ -28,6 +27,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.Consumer
+import dev.kosmio.mcppowerup.ProjectPaths
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -61,11 +61,11 @@ class ChangelistToolset : McpToolset {
                     isDefault = list.isDefault,
                     isReadOnly = list.isReadOnly,
                     files = list.changes.map { change ->
-                        FileEntry(relativize(basePath, change), mapChangeType(change))
+                        FileEntry(ProjectPaths.relativize(basePath, change), mapChangeType(change))
                     },
                 )
             }
-            val unversioned = clm.unversionedFilesPaths.map { relativizePath(basePath, it.path) }
+            val unversioned = clm.unversionedFilesPaths.map { ProjectPaths.relativize(basePath, it.path) }
             ChangelistsResult(changelists = lists, unversionedFiles = unversioned)
         }
     }
@@ -389,13 +389,13 @@ class ChangelistToolset : McpToolset {
      * VirtualFile — resolve correctly.
      *
      * [sourceName] scopes the whole call to one changelist's changes, uniformly: every path is kept only
-     * if that changelist holds it, so a file living entirely in another changelist and a new file (which
-     * no changelist holds) are both skipped as not_in_source. It is what makes a file split across
+     * if that changelist holds it, so a file living entirely in another changelist, and a new file (which
+     * no changelist holds), are each skipped as not_in_source. It is what makes a file split across
      * changelists tractable — only the hunks that changelist holds move, the others stay where they are.
      * Without it a split file is refused rather than consolidated, since moving it whole would relocate
      * hunks the caller never claimed.
      *
-     * Three phases: (1a) classify the requested paths under a read action; (1b) move tracked changes on
+     * Phases: (1a) classify the requested paths under a read action; (1b) move tracked changes on
      * the ChangeListManager updater thread (via [moveByPaths]) so the move is serialized with the update
      * pipeline and a trailing/racing update can't revert it; (2) schedule unversioned files for addition
      * with a synchronous VCS task that must NOT hold the write lock and must be off the EDT — it runs on
@@ -514,7 +514,7 @@ class ChangelistToolset : McpToolset {
         val map = HashMap<String, MutableList<HeldChange>>()
         for (list in clm.changeLists) {
             for (change in list.changes) {
-                map.getOrPut(relativize(basePath, change)) { mutableListOf() } +=
+                map.getOrPut(ProjectPaths.relativize(basePath, change)) { mutableListOf() } +=
                     HeldChange(list.name, list.isReadOnly, change)
             }
         }
@@ -638,10 +638,6 @@ class ChangelistToolset : McpToolset {
         Change.Type.MOVED -> "MOVED"
     }
 
-    /** Strip the project base-path prefix to produce a project-relative path. */
-    private fun relativize(basePath: String, change: Change): String =
-        relativizePath(basePath, ChangesUtil.getFilePath(change).path)
-
     /**
      * The comment's subject line, capped at [MAX_COMMENT_LINE] chars with an ellipsis when it is cut.
      * Enough to recognise what a changelist is about; `get_changelist_comment` returns the full text.
@@ -650,10 +646,6 @@ class ChangelistToolset : McpToolset {
         val line = comment.lineSequence().firstOrNull().orEmpty().trim()
         return if (line.length <= MAX_COMMENT_LINE) line else line.take(MAX_COMMENT_LINE - 1) + "\u2026"
     }
-
-    /** Strip the project base-path prefix from an absolute path to produce a project-relative one. */
-    private fun relativizePath(basePath: String, fullPath: String): String =
-        if (fullPath.startsWith(basePath)) fullPath.removePrefix(basePath).trimStart('/') else fullPath
 
     /** Stable token identifying this toolset as the holder of any line-status trackers it requests. */
     private val trackerRequester = Any()

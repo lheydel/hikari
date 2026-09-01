@@ -1,0 +1,10 @@
+<idea-plugin>
+    <!-- The hop maps a Kotlin declaration to the light methods the compiler would generate for it, so it
+         returns PsiMethod, which the Java plugin owns. Declared here rather than in the main descriptor so
+         it stays scoped to this optional config file, and the plugin still loads in a Java-less IDE. -->
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="dev.kosmio.mcp-powerup">
+        <superDeclarationProvider implementation="dev.kosmio.mcppowerup.analysis.kt.KotlinSuperDeclarationProvider"/>
+    </extensions>
+</idea-plugin>

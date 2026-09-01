@@ -1,7 +1,7 @@
 # CLAUDE.md — working on this plugin
 
 A JetBrains plugin, id `dev.kosmio.mcp-powerup`, that contributes tools to IntelliJ's **bundled** MCP
-server — today, changelist tools. See `README.md` for what it does, the tool surface, and install/connect
+server: changelist tools, and code-intelligence tools built on the IDE's indexes. See `README.md` for what it does, the tool surface, and install/connect
 steps — this file is for editing the code. Most of what's below is empirical: it was learned by hitting it, and is **not** visible from
 reading the source.
 
@@ -13,7 +13,7 @@ later. The *one* mutation the plugin makes is scheduling new (unversioned) files
 so they can be grouped. The user reviews and commits in IntelliJ.
 
 The charter is per-plugin, not per-tool-family: it binds every tool this plugin ever contributes, whatever
-the concern. The plugin name does not mention "changelist", so this paragraph is the only signal a session
+the concern. The plugin name does not mention "changelist", so this paragraph is the signal a session
 reading the plugin name gets.
 
 ## Build & test
@@ -26,6 +26,16 @@ reading the plugin name gets.
 - Artifact: `build/distributions/intellij-mcp-powerup-<version>.zip`.
 - **Every code change needs a reinstall to test live**: Settings → Plugins → ⚙ → Install Plugin from Disk →
   the zip → **restart**. There is no hot reload. `./gradlew runIde` gives an isolated sandbox IDE instead.
+- **Exercise a tool end-to-end without installing: `./gradlew runIde --args="<project path>"`, and speak MCP to
+  the sandbox.** Put
+  `<application><component name="McpServerSettings"><option name="enableMcpServer" value="true"/></component></application>`
+  in `.intellijPlatform/sandbox/<name>/<build>/config/options/mcpServer.xml` and the sandbox IDE serves this
+  plugin's tools on a port of its own — 64343 while the real IDE holds 64342; `lsof -nP -iTCP -sTCP:LISTEN -a -p <pid>`
+  names it. The transport is SSE: `GET /sse` answers `event: endpoint` with a `?sessionId=…` path (**strip the
+  trailing CR** or curl rejects the URL as malformed), then POST `initialize`, `notifications/initialized` and
+  `tools/call` to that path; replies arrive on the open SSE stream, not in the POST response. Registration
+  failures are silent — a broken toolset just never appears in `tools/list` — so this is what catches them, and
+  `.intellijPlatform/sandbox/<name>/<build>/log/idea.log` carries the reason.
 
 ## Toolchain — pinned for hard reasons (don't "upgrade" blindly)
 
@@ -38,17 +48,38 @@ reading the plugin name gets.
 - Dependencies that aren't obvious: `bundledPlugin("com.intellij.mcpServer")`;
   `bundledModule("intellij.platform.vcs.impl")` (for `ChangeListManagerEx`, the patch builder, the
   line-status tracker, `ChangeListManagerImpl.editComment`); `bundledModule("intellij.platform.vcs.impl.shared")`
-  (for `LocalRange`). `kotlinx-serialization-json` is `compileOnly` — the platform ships its own; bundling clashes.
+  (for `LocalRange`); `bundledPlugin("org.jetbrains.kotlin")` (for `toLightMethods`) and
+  `bundledPlugin("com.intellij.java")` (for `PsiMethod.findSuperMethods`), used only by the Kotlin
+  override hop. `kotlinx-serialization-json` is `compileOnly` — the platform ships its own; bundling clashes.
+- **`verifyPlugin` reads the root descriptor only, never an optional `<depends config-file=…>` one.** So the
+  Java dependency and the `supportsKotlinPluginMode` declaration that `mcp-powerup-kotlin.xml` carries are
+  invisible to it, and it reports the plugin as using Java classes without declaring Java. Moving those to
+  `plugin.xml` would make the whole plugin, changelist tools included, refuse to load in an IDE without Java,
+  so the problem is listed in `verifier-ignored-problems.txt` (wired via `pluginVerification.ignoredProblemsFile`).
+  That file reaches problems only — the matching *warning* stands on every run and does not fail the build.
 - The plugin id must **not** contain the word "intellij" (the verifier rejects it) — hence
   `dev.kosmio.mcp-powerup`. The repository name and the distribution archive name may.
+- **`<supportsKotlinPluginMode supportsK2="true"/>` goes in `plugin.xml`, not in the optional Kotlin config file
+  it gates.** The loader reads `org.jetbrains.kotlin.supportsKotlinPluginMode` off the ROOT descriptor
+  (`KotlinK2ModeCompatibilityCheckerKt.getSupportKotlinPluginModeEPs`) to decide whether to load that config file
+  at all. Declared inside the file, the file is skipped in K2 mode behind a WARN — `… was not loaded` — and the
+  override hop then reports itself unavailable with nothing to say why.
 
 ## The MCP tool API (2026.1)
 
-- A class implements the marker `com.intellij.mcpserver.McpToolset`; each tool is a `suspend fun` annotated
-  `@McpTool` + `@McpDescription`. Annotate **every parameter** too — those descriptions become the JSON schema.
+- A toolset class implements the marker `com.intellij.mcpserver.McpToolset`; each tool is a `suspend fun`
+  annotated `@McpTool` + `@McpDescription`. Annotate **every parameter** too — those descriptions become the JSON schema.
 - Tool name = method name. Return an `@Serializable` data class (in `Models.kt`). Errors: `mcpFail("…")` (returns Nothing).
+- **A return type must not be recursive.** The framework post-processes the generated JSON schema by walking
+  `properties`/`items` in lockstep with the `SerialDescriptor`
+  (`com.intellij.mcpserver.impl.util.Schema_utilKt.removeRequiredForDefaultValues`), and a self-referential
+  `@Serializable` class derails that walk with `IllegalArgumentException: Element class
+  kotlinx.serialization.json.JsonObject is not a JsonPrimitive`. The **whole toolset** is then dropped —
+  `ReflectionToolsProvider` logs `Cannot load tools for …` and its tools never reach `tools/list`, with nothing
+  visible to a caller. Flatten instead: `call_tree`'s `tree` is a flat breadth-first list whose nodes carry the
+  index of the node they call.
 - Project: `currentCoroutineContext().project` (import `com.intellij.mcpserver.project`).
-- Register tools via an `<mcpToolset>` in `plugin.xml`.
+- Register each toolset with its own `<mcpToolset>` in `plugin.xml`.
 - The framework auto-injects a `projectPath` parameter into every tool — that's the multi-project/instance
   routing mechanism; don't declare it yourself.
 
@@ -72,7 +103,8 @@ reading the plugin name gets.
 - **Analysis reads: `smartReadAction(project) { }`, one small unit of work per call.** Not the plain
   `readAction` the changelist tools use — reference search under `DumbService` returns nothing or throws
   during the reindex a `refresh_changelists` triggers, and an empty result is indistinguishable from
-  "no callers". Both live in `com.intellij.openapi.application.ActionsKt`.
+  "no callers". Each is a `com.intellij.openapi.application` top-level function, compiled into
+  `CoroutinesKt` — `ActionsKt` in the same package holds only the blocking `runReadAction` family.
   - The platform already retries: `smartReadAction` is cancelled and **restarted** when a write action
     arrives, which is what `ReadAction$CannotReadException` reports. So the retry needs no code — but it
     restarts the *whole lambda*, so a traversal wrapped in one read action can livelock against a user who
@@ -122,14 +154,16 @@ Serialising the same traversal both ways, at `chars / 4` per that document's con
 
 | Seed | Depth | Nodes | `tree` | `grouped` |
 |---|---:|---:|---:|---:|
-| `TransactionSpi.execute` | 1 | 65 | 15 612 c ≈ 3 903 t | 2 764 c ≈ **691 t** |
-| `TransactionSpi.execute` | 2 | 121 | 28 728 c ≈ 7 182 t | 4 504 c ≈ **1 126 t** |
-| `Button` | 1 | 43 | 7 002 c ≈ 1 750 t | 1 146 c ≈ **286 t** |
-| `Button` | 2 | 108 | 18 056 c ≈ 4 514 t | 2 128 c ≈ **532 t** |
+| `TransactionSpi.execute` | 1 | 64 | 16 775 c ≈ 4 194 t | 5 251 c ≈ **1 313 t** |
+| `TransactionSpi.execute` | 2 | 117 | 30 119 c ≈ 7 530 t | 7 601 c ≈ **1 900 t** |
+| `Button` | 1 | 43 | 7 725 c ≈ 1 931 t | 2 420 c ≈ **605 t** |
+| `Button` | 2 | 109 | 19 732 c ≈ 4 933 t | 5 523 c ≈ **1 381 t** |
 
-`grouped` runs 6–8× cheaper and carries the same caller set — it drops per-node paths, line numbers and tree
-structure, keeping module, counts and declaration names. So `grouped` is the default and the tool description
-steers callers to it; `tree` is opt-in, for when the file locations are the point.
+`grouped` runs 3–4× cheaper and carries the same caller set — it drops per-node paths, line numbers and tree
+structure, keeping module, file name, counts and declaration names. So `grouped` is the default and the tool
+description steers callers to it; `tree` is opt-in, for when the file locations are the point. The file name
+is what keeps `grouped` usable on the frontend, where a whole workspace is one IntelliJ module and grouping
+by module alone says nothing.
 
 - **`format: grouped | tree` is a caller argument, not a mode the tool picks.** At `grouped` sizes, output
   stops being the binding constraint at the depths that matter, so there is no width threshold at which the
@@ -174,9 +208,14 @@ read action, which may serialise the children, so treat it as a lower bound rath
 - **`PsiNamedElement` is not a usable substitute.** A `PsiFile` is a `PsiNamedElement`, so a first-named-parent
   filter reports files as callers — on the `Button` seed that is how a large share of its references resolve.
   JSX literals resolve the same way.
-- **Require a non-null `name` on top of `PsiNameIdentifierOwner`.** On Kotlin the bare predicate also matches
-  `KtFunctionLiteral`, which is nameless and a dead end for further search; requiring a name removes it and
-  keeps the `KtProperty` nodes, which are real call sites.
+- **Reject a name that starts with `<`, on top of requiring a non-null `name`.** A synthetic element gets a
+  placeholder name in angle brackets rather than no name: `KtFunctionLiteral.getName()` answers
+  `<anonymous>`, so a null check alone lets every Kotlin lambda through. They are dead ends — nothing
+  references a lambda — and they dominate the result where a codebase nests calls in lambdas: the
+  `TransactionSpi.execute` seed at depth 2 carries 136 nodes with lambdas admitted and 117 without, and its
+  test side drops from 26 nodes, mostly step-definition lambdas, to 12 real declarations. The `KtProperty` nodes, which
+  are real call sites, survive either way. Skip the placeholder segments when building a qualified name too,
+  so a property declared inside a lambda reads `UserDeleteFeatureImpl.invoke.deleted`.
 - **`TestSourcesFilter.isTestSources` classifies nothing in this project.** It returns false for every node of
   the `TransactionSpi.execute` tree, including the step definitions, because they live in a Gradle *main*
   source set at `platform/server/test/src/main/kotlin`. Test detection has to key on path or package, and it
@@ -184,9 +223,16 @@ read action, which may serialise the children, so treat it as a lower bound rath
 
 ## Source layout
 
+- `src/main/kotlin/dev/kosmio/mcppowerup/ProjectPaths.kt` — project-relative path helpers, shared by every toolset this plugin contributes.
 - `src/main/kotlin/dev/kosmio/mcppowerup/changelist/ChangelistToolset.kt` — the changelist `McpToolset`, its tools, private helpers.
 - `src/main/kotlin/dev/kosmio/mcppowerup/changelist/Models.kt` — `@Serializable` result DTOs for the changelist tools.
-- `src/main/resources/META-INF/plugin.xml` — an `<mcpToolset>` registration.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/AnalysisToolset.kt` — the analysis `McpToolset`.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/CallTreeTraversal.kt` — the traversal engine behind `call_tree`.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/Models.kt` — `@Serializable` result DTOs for the analysis tools.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/SuperDeclarationProvider.kt` — the override hop's extension point.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/kt/KotlinSuperDeclarationProvider.kt` — its Kotlin implementation.
+- `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`.
+- `src/main/resources/META-INF/mcp-powerup-kotlin.xml` — loaded only when the Kotlin plugin is present.
 
 ## Inspecting platform APIs
 

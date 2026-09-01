@@ -1,9 +1,10 @@
 # MCP Powerup
 
-A JetBrains IDE plugin that adds tools to the IDE's built-in MCP server. It exposes IntelliJ's
-**local changelists**, so an MCP client (e.g. Claude Code) can read changelist state, draft commit
-messages from a changelist's diff, and organize modified files into changelists for you to review
-and commit.
+A JetBrains IDE plugin that adds tools to the IDE's built-in MCP server, for an MCP client such as
+Claude Code. It exposes IntelliJ's **local changelists** — read changelist state, draft commit messages
+from a changelist's diff, and organize modified files into changelists for you to review and commit —
+and the IDE's **code intelligence**: a reverse call tree that answers what transitively depends on a
+declaration, following what it overrides so an implementation reaches its port's callers.
 
 > **Read and organize only.** This plugin never mutates file contents or VCS state — it never commits,
 > pushes, stashes, reverts, shelves, or edits a file. It reads state and rearranges which changelist a
@@ -23,14 +24,21 @@ granular per-line selection) → you commit in IntelliJ → you push. Gaps make 
 
 This plugin closes these gaps while keeping commit & push firmly in your hands.
 
+The IDE's own MCP tools cover reading, searching and editing, but none of them answers *what depends on
+this*: the bundled server ships no find-usages, call hierarchy or inheritance tool. An agent that just
+changed a function is left grepping for its name — which finds nothing at all for an implementation whose
+only caller goes through the interface it implements. `call_tree` is that missing hop.
+
 ## Requirements
 
 - **IntelliJ IDEA 2026.1 or newer** (build `261+`). The MCP server is bundled in the IDE since 2025.2, and
   this plugin uses the 2026.1 MCP API (`McpToolset` + the `McpCallInfoKt` project accessor). It will not
   load on older builds — `sinceBuild` is `261`.
-- Works on both IDEA Community and Ultimate (since 2025.3 they're a single distribution).
+- Works on IDEA Community and Ultimate (since 2025.3 they're a single distribution).
 
 ## Tools
+
+### Changelists
 
 | Tool | Arguments | Purpose |
 |---|---|---|
@@ -44,7 +52,30 @@ This plugin closes these gaps while keeping commit & push firmly in your hands.
 | `set_changelist_comment` | `name`, `comment` | Set a changelist's comment, which IntelliJ uses as the **default commit message** — so the commit dialog is pre-filled. **Use a *named* changelist:** the default `Changes` ignores its comment (the dialog shows the last commit message instead). |
 | `delete_changelist` | `name`, `moveContentsTo?` | Delete a changelist, relocating its files first (default target `"Default"`). Refuses to delete `Default`. |
 
-They register through a `McpToolset`; they appear alongside the IDE's built-in MCP tools.
+### Code intelligence
+
+| Tool | Arguments | Purpose |
+|---|---|---|
+| `call_tree` | `file`, `symbol`, `depth?`, `format?` | Reverse call tree from one declaration: what calls it, transitively, in a single call. At every node it follows both the references to the declaration and the declaration it **overrides**, so an implementation reaches the callers of the port it implements. Project sources only. `depth` defaults to 2 (max 5); `format` defaults to `grouped` (callers per module and file, about a third the size of `tree`, which adds per-node paths and line numbers). `tree` comes back flat, breadth-first, each node carrying `calls` — the index of the node it calls, `-1` for the seed. |
+
+Reading a `call_tree` result:
+
+- **`status`** is `complete`, `stopped_at_depth` or `stopped_unresolved`. On either stopped status,
+  **`frontier`** lists the nodes that were never expanded as `{file, symbol}` pairs — feed one back as the
+  next seed to continue rather than reading a partial answer as a total one.
+- **Zero callers is not dead code.** `@Scheduled` tasks, `@EventListener` handlers, `@Bean` endpoints and
+  route files have no callers by construction, and static search cannot tell them from genuinely unused
+  code. That reading only applies when **`superHop.available`** is true; when it is false, no override hop
+  is registered for that language and an empty result says nothing either way.
+- **Test-source callers are reported apart from production ones**, and they expand like any other node —
+  they are a real answer to "what depends on this", they just must not read as production impact.
+  Classification keys on path and file name, not on the source root's kind, which misses test code that
+  lives in a Gradle *main* source set.
+- **`staleness`** says whether the IDE's copy of the seed file still matches what is on disk. Call
+  `refresh_changelists` first when you have edited files outside the IDE: without it, the answer is built
+  from the file as the IDE last saw it.
+
+Each family registers as its own `McpToolset`; they appear alongside the IDE's built-in MCP tools.
 
 ## Intended workflow
 
@@ -100,7 +131,7 @@ Other useful tasks:
 
 If the older **Changelist MCP** plugin (id `dev.kosmio.changelist-mcp`) is still installed, uninstall it
 first and restart: it has a different id, so the IDE treats it as a separate plugin, and with both
-installed, both register `list_changelists` and the MCP server sees a name collision at runtime.
+installed, each registers `list_changelists` and the MCP server sees a name collision at runtime.
 
 Then, in your IDE: **Settings → Plugins → ⚙ → Install Plugin from Disk…**, pick the built `.zip`, and restart.
 
@@ -125,6 +156,8 @@ JetBrains MCP tool:
 - **Single VCS root.** Path resolution uses `project.basePath`; multi-root projects are out of scope.
 - **No streaming.** Large diffs are truncated at 200 KB with a marker.
 - **Partial moves are best-effort** — see [Parallel sessions](#parallel-sessions).
+- **The override hop is contributed per language, and Kotlin is the language contributed.** Elsewhere
+  `call_tree` reports `superHop.available: false` and walks references only.
 
 ## Development notes
 
@@ -137,13 +170,28 @@ The build targets a specific toolchain (each pinned for a concrete reason):
 - Depends on the bundled `com.intellij.mcpServer` plugin and the bundled modules
   `intellij.platform.vcs.impl` (for `ChangeListManagerEx`, the patch builder, the line-status tracker) and
   `intellij.platform.vcs.impl.shared` (for `LocalRange`).
+- Depends on the bundled `org.jetbrains.kotlin` plugin (for `toLightMethods`) and `com.intellij.java`
+  (for `PsiMethod.findSuperMethods`), only for the Kotlin override hop. That hop is registered from
+  an optional config file, so the plugin loads regardless of whether they're present — and because the
+  plugin verifier reads only the root descriptor, the Java dependency declared in that optional file is
+  listed in `verifier-ignored-problems.txt`.
 - `kotlinx-serialization-json` is `compileOnly` — the platform ships its own copy; bundling ours would clash.
 
 Source layout:
 
 ```
-src/main/kotlin/dev/kosmio/mcppowerup/changelist/
-  ChangelistToolset.kt   # the McpToolset with all changelist tool methods
-  Models.kt              # @Serializable result/DTO types
+src/main/kotlin/dev/kosmio/mcppowerup/
+  ProjectPaths.kt                       # project-relative path helpers, shared by every toolset this plugin contributes
+  changelist/
+    ChangelistToolset.kt                # the McpToolset with all changelist tool methods
+    Models.kt                           # @Serializable result/DTO types
+  analysis/
+    AnalysisToolset.kt                  # the McpToolset with call_tree
+    CallTreeTraversal.kt                # the traversal engine
+    Models.kt                           # @Serializable result/DTO types
+    SuperDeclarationProvider.kt         # the per-language override hop's extension point
+    kt/
+      KotlinSuperDeclarationProvider.kt # its Kotlin implementation
 src/main/resources/META-INF/plugin.xml
+src/main/resources/META-INF/mcp-powerup-kotlin.xml   # loaded only when the Kotlin plugin is present
 ```

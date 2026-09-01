@@ -22,6 +22,11 @@ dependencies {
         bundledModule("intellij.platform.vcs.impl")
         // LocalRange (the per-hunk type returned by the partial line-status tracker) lives here.
         bundledModule("intellij.platform.vcs.impl.shared")
+        // toLightMethods, the Kotlin half of the call_tree override hop. Contributed from an OPTIONAL
+        // config file, so this is a compile-time dependency only — the plugin loads without Kotlin.
+        bundledPlugin("org.jetbrains.kotlin")
+        // PsiMethod.findSuperMethods, which that hop calls on the light methods it gets back.
+        bundledPlugin("com.intellij.java")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
     // compileOnly to avoid the kotlinx-serialization classloader clash with the platform's copy:
@@ -36,6 +41,11 @@ intellijPlatform {
             sinceBuild = "261"        // 2026.1+; the project accessor resolves to McpCallInfoKt (2026.1-only).
         }
         changeNotes = "Initial version"
+    }
+    pluginVerification {
+        // The verifier reads plugin.xml only, so it cannot see what the optional Kotlin config file
+        // declares; this file lists only what follows from that blind spot.
+        ignoredProblemsFile = file("verifier-ignored-problems.txt")
     }
 }
 

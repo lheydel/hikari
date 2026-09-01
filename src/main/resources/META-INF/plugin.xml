@@ -2,13 +2,36 @@
     <id>dev.kosmio.mcp-powerup</id>
     <name>MCP Powerup</name>
     <vendor>kosmio</vendor>
-    <description><![CDATA[Adds tools to the IDE's built-in MCP server. Exposes IntelliJ local changelists: read state, draft commit messages from a changelist diff, and organize modified files into changelists. Read and organize only — it never mutates file contents or VCS state; scheduling unversioned files for addition is the single exception.]]></description>
+    <description><![CDATA[Adds tools to the IDE's built-in MCP server. Exposes IntelliJ local changelists: read state, draft commit messages from a changelist diff, and organize modified files into changelists. Adds code intelligence the MCP server does not otherwise offer: a reverse call tree that walks from a declaration to what transitively calls it, following what it overrides so an implementation reaches its port's callers. Read and organize only — it never mutates file contents or VCS state; scheduling unversioned files for addition is the single exception.]]></description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
     <depends>com.intellij.mcpServer</depends>
 
+    <!-- The Kotlin override hop. Optional so an IDE without the Kotlin plugin still loads this plugin
+         and every tool in it; call_tree reports the hop unavailable for Kotlin rather than failing. -->
+    <depends optional="true" config-file="mcp-powerup-kotlin.xml">org.jetbrains.kotlin</depends>
+
+    <!-- Declared HERE, not in the config file above, and this is not a style choice: the loader reads
+         org.jetbrains.kotlin.supportsKotlinPluginMode off the ROOT descriptor to decide whether to load
+         that config file at all (KotlinK2ModeCompatibilityCheckerKt.getSupportKotlinPluginModeEPs). Put
+         it inside the file it gates and the file is silently skipped in K2 mode — the override hop then
+         reports itself unavailable, with no indication why. -->
+    <extensions defaultExtensionNs="org.jetbrains.kotlin">
+        <!-- toLightMethods resolves through the Analysis API in K2 mode; nothing here needs K1. -->
+        <supportsKotlinPluginMode supportsK2="true"/>
+    </extensions>
+
+    <extensionPoints>
+        <!-- "What does this declaration override" has no language-neutral platform API, so it is the
+             surface of the traversal contributed per language, from an optional config file. -->
+        <extensionPoint name="superDeclarationProvider"
+                        interface="dev.kosmio.mcppowerup.analysis.SuperDeclarationProvider"
+                        dynamic="true"/>
+    </extensionPoints>
+
     <extensions defaultExtensionNs="com.intellij.mcpServer">
         <mcpToolset implementation="dev.kosmio.mcppowerup.changelist.ChangelistToolset"/>
+        <mcpToolset implementation="dev.kosmio.mcppowerup.analysis.AnalysisToolset"/>
     </extensions>
 </idea-plugin>
