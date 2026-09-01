@@ -18,40 +18,52 @@ class AnalysisToolset : McpToolset {
 
     @McpTool
     @McpDescription(
-        "Reverse call tree: from one declaration, walk to what calls it, transitively, in a single call. " +
-            "At every node it follows the references to the declaration and the declaration it " +
-            "OVERRIDES, so an implementation reaches the callers of the interface or port it implements — " +
-            "the hop a text search cannot make, since such an implementation often has no textual " +
-            "reference to it anywhere. Project sources only: never libraries or the SDK. " +
-            "IMPORTANT — zero callers does NOT mean dead code: framework entry points (@Scheduled, " +
-            "@EventListener, @Bean endpoints, route files) have no callers by construction. And that " +
-            "reading only holds when superHop.available is true; when it is false no override hop is " +
-            "registered for the seed's language, so an empty result says nothing either way. " +
-            "status tells you whether the traversal completed ('complete') or stopped ('stopped_at_depth', " +
-            "'stopped_unresolved'); on either stopped status, frontier lists the nodes that were never " +
-            "expanded as {file, symbol} pairs you can re-seed to continue — never read a stopped run as a " +
-            "total answer. If you edited files with your own file tools, call refresh_changelists FIRST: " +
-            "IntelliJ does not see external edits until it re-scans, and staleness in the result reports " +
-            "whether the answer was built from the file as it stands on disk.",
+        "Reverse call tree: from one declaration, walk transitively to what calls it, in a single call. At each " +
+        "node it follows references to the declaration AND what it OVERRIDES, so an implementation reaches its " +
+        "port's callers — the hop a text search cannot make. Project sources only. OUTPUT (text): line 1 = seed, " +
+        "caller count, depth, status (complete|stopped_at_depth|stopped_unresolved); line 2 = whether the override " +
+        "hop resolved; then a `dirs:` table numbering directories D<n>; then the tree, where indent means 'calls " +
+        "the line above'. A node ends with D<n>/<file>:<line>, or D<n>.<ext>:<line> meaning the file is the " +
+        "declaration's outermost segment plus that extension (`Foo.bar  D2.kt:9` = D2/Foo.kt line 9). Marks: * " +
+        "never expanded (a stopped run — re-run deeper; never read it as a total answer), ^ reached via the " +
+        "override hop, (test) test source. Zero callers is NOT dead code: framework entry points (@Scheduled, " +
+        "@EventListener, @Bean, route files) have none by construction — and that reading only holds if line 2 says " +
+        "the hop resolved. Edited files with your own tools? Call refresh_changelists FIRST; a STALE line means the " +
+        "IDE has not re-scanned."
     )
     suspend fun call_tree(
-        @McpDescription("Project-relative path of the file holding the declaration to start from (use search_symbol to find it).")
+        @McpDescription("Project-relative path of the file holding the seed declaration (search_symbol finds it).")
         file: String,
-        @McpDescription("The declaration to start from, named as `outline` reports it: its name qualified by its enclosing declarations (`ProjectCreateFeatureImpl.invoke`), with `#N` appended when the file holds more than one declaration under that qualified name. A bare name is accepted when it is unambiguous in the file; an ambiguous one comes back as an error listing the exact values to choose from.")
+        @McpDescription("The declaration, as `outline` prints it: its name qualified by its enclosing declarations (`ProjectCreateFeatureImpl.invoke`), plus `#N` when that qualified name repeats in the file. A bare name works when unambiguous; an ambiguous one errors, listing the exact values to choose from.")
         symbol: String,
-        @McpDescription("How many hops of callers to walk. 2 (the default) reaches the endpoint layer for a change in a domain declaration; beyond that a tree tends to drift into test helpers calling each other. Maximum 5. The first hop is always exhaustive.")
+        @McpDescription("Hops of callers to walk. 2 (the default) reaches the endpoint layer for a change in a domain declaration; beyond that a tree drifts into test helpers calling each other. Max 5. The first hop is always exhaustive.")
         depth: Int = CallTreeTraversal.DEFAULT_DEPTH,
-        @McpDescription("'grouped' (the default) reports the callers per module and file with their declaration names, and carries the same caller set as 'tree' at about a third of the size — prefer it. 'tree' adds the tree structure, each node's project-relative path and its line number; ask for it when the locations are what you need.")
-        format: String = CallTreeTraversal.FORMAT_GROUPED,
-    ): CallTreeResult {
+    ): String {
         val project = currentCoroutineContext().project
         if (depth < 1 || depth > CallTreeTraversal.MAX_DEPTH) {
             mcpFail("depth must be between 1 and ${CallTreeTraversal.MAX_DEPTH}, was $depth")
         }
-        if (format != CallTreeTraversal.FORMAT_GROUPED && format != CallTreeTraversal.FORMAT_TREE) {
-            mcpFail("format must be '${CallTreeTraversal.FORMAT_GROUPED}' or '${CallTreeTraversal.FORMAT_TREE}', was '$format'")
-        }
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
-        return CallTreeTraversal(project, basePath).run(NodeRef(file, symbol), depth, format)
+        return CallTreeTraversal(project, basePath).run(NodeRef(file, symbol), depth)
+    }
+
+    @McpTool
+    @McpDescription(
+        "A file's shape without its contents: every declaration with the IDE's signature for it and the lines it " +
+        "spans — never body text. Read this INSTEAD of a whole file, then read only the range you need. OUTPUT " +
+        "(text): line 1 = file, language, length; then one line per declaration as `START-END signature`, indented " +
+        "under whatever it nests in. START/END are 1-based inclusive and cover the doc comment and annotations too. " +
+        "To seed call_tree use the signature's leading identifier — unless the line ends with [symbol], which means " +
+        "the bare name would not resolve and you must pass the bracketed value verbatim. A trailing `... N more not " +
+        "listed` line means the output cap bound; read the file for the rest. Edited the file with your own tools? " +
+        "Call refresh_changelists FIRST; a STALE line means the IDE has not re-scanned."
+    )
+    suspend fun outline(
+        @McpDescription("Project-relative path of the file to outline.")
+        file: String,
+    ): String {
+        val project = currentCoroutineContext().project
+        val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
+        return OutlineBuilder(project, basePath).run(file)
     }
 }

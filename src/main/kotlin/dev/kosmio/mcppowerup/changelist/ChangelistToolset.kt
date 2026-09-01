@@ -47,32 +47,55 @@ import java.util.concurrent.CountDownLatch
 class ChangelistToolset : McpToolset {
 
     @McpTool
-    @McpDescription("List IntelliJ local changelists with their files and metadata, plus the project's unversioned (new, not-yet-tracked) files. File paths are project-relative; changeType is one of MODIFIED/ADDED/DELETED/MOVED. Comments are reported as commentFirstLine (the subject line, truncated to 120 chars) plus commentLength — enough to tell what a changelist is about; call get_changelist_comment to read one in full, e.g. before extending it. New files appear under unversionedFiles until grouped into a changelist with create_changelist/move_to_changelist (which schedule them for addition).")
-    suspend fun list_changelists(): ChangelistsResult {
+    @McpDescription(
+        "List local changelists with their files, plus unversioned (new, untracked) files. OUTPUT (text): `# name " +
+        "[flags] — first line of comment (Nc)` per changelist, then indented `<T> <project-relative path>` per " +
+        "file, T being M/A/D/M for modified/added/deleted/moved. Unversioned files follow a `# unversioned` heading " +
+        "with `?`; they belong to no changelist until create_changelist or move_to_changelist schedules them for " +
+        "addition. Only each comment's first line is shown, with its full length — get_changelist_comment reads one " +
+        "whole."
+    )
+    suspend fun list_changelists(): String {
         val project = currentCoroutineContext().project
         return readAction {
             val basePath = project.basePath ?: mcpFail("No project base path")
             val clm = ChangeListManager.getInstance(project)
-            val lists = clm.changeLists.map { list ->
-                ChangelistInfo(
-                    name = list.name,
-                    commentFirstLine = firstLine(list.comment ?: ""),
-                    commentLength = (list.comment ?: "").length,
-                    isDefault = list.isDefault,
-                    isReadOnly = list.isReadOnly,
-                    files = list.changes.map { change ->
-                        FileEntry(ProjectPaths.relativize(basePath, change), mapChangeType(change))
-                    },
-                )
+            val out = mutableListOf<String>()
+            for (list in clm.changeLists) {
+                val flags = buildList {
+                    if (list.isDefault) add("default")
+                    if (list.isReadOnly) add("readonly")
+                }
+                val comment = list.comment ?: ""
+                out += buildString {
+                    append("# ").append(list.name)
+                    if (flags.isNotEmpty()) append(" [").append(flags.joinToString(",")).append("]")
+                    if (comment.isNotEmpty()) {
+                        append(" — ").append(firstLine(comment)).append(" (").append(comment.length).append("c)")
+                    }
+                }
+                for (change in list.changes) {
+                    out += "  ${mapChangeType(change).first()} ${ProjectPaths.relativize(basePath, change)}"
+                }
             }
             val unversioned = clm.unversionedFilesPaths.map { ProjectPaths.relativize(basePath, it.path) }
-            ChangelistsResult(changelists = lists, unversionedFiles = unversioned)
+            if (unversioned.isNotEmpty()) {
+                out += "# unversioned (new, not yet tracked — grouping one schedules it for addition)"
+                unversioned.forEach { out += "  ? $it" }
+            }
+            if (out.isEmpty()) "no local changes" else out.joinToString("\n")
         }
     }
 
     @McpTool
-    @McpDescription("Re-scan the working tree so IntelliJ sees files changed outside the IDE, and recompute changelist state. Call this BEFORE list_changelists / the move tools whenever you have created, edited, or deleted files with Claude's own file tools — IntelliJ does not detect external edits until it re-scans, so those tools would otherwise miss your changes. Blocks until the re-scan completes; then call list_changelists to read the refreshed state.")
-    suspend fun refresh_changelists(): RefreshResult {
+    @McpDescription(
+        "Re-scan the working tree so IntelliJ sees files changed outside the IDE. Call this BEFORE " +
+        "list_changelists, the move tools, call_tree or outline whenever you created, edited or deleted files with " +
+        "your own file tools — IntelliJ does not detect external edits until it re-scans. Blocks until done. OUTPUT " +
+        "(text): a bare confirmation, no counts — the unversioned list settles a beat later, so any count here " +
+        "would be racy. Read list_changelists afterwards."
+    )
+    suspend fun refresh_changelists(): String {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
         val baseDir = readAction { LocalFileSystem.getInstance().findFileByPath(basePath) }
@@ -90,33 +113,44 @@ class ChangelistToolset : McpToolset {
             var guard = 0
             while (clm.isInUpdate() && guard++ < MAX_SETTLE_DRAINS) clm.waitForUpdate()
         }
-        return RefreshResult(refreshed = true)
+        return "refreshed — call list_changelists to read the new state"
     }
 
     @McpTool
-    @McpDescription("Return the unified diff for a single changelist, used to draft a commit message. Output is capped at 200 KB.")
+    @McpDescription(
+        "Unified diff for one changelist, for drafting a commit message. OUTPUT (text): the raw diff, nothing " +
+        "wrapping it. Capped at 200 KB with a marker where it was cut."
+    )
     suspend fun get_changelist_diff(
         @McpDescription("Name of the changelist to diff.") name: String,
-    ): DiffResult {
+    ): String {
         val project = currentCoroutineContext().project
         return readAction {
             val basePath = project.basePath ?: mcpFail("No project base path")
             val list = ChangeListManager.getInstance(project).changeLists.firstOrNull { it.name == name }
                 ?: mcpFail("Changelist '$name' not found")
             val diff = buildUnifiedDiff(project, basePath, list.changes.toList())
-            DiffResult(name = name, unifiedDiff = diff)
+            diff.ifEmpty { "changelist '$name' holds no changes" }
         }
     }
 
     @McpTool
-    @McpDescription("Create a new changelist and optionally move the listed files into it. Currently-modified files are moved whole; unversioned (new) files are scheduled for addition (add-to-VCS) into the new changelist and reported in addedFiles (not when `from` is set — see below). A file whose hunks are SPLIT across several changelists is refused with reason split_across_changelists (remainingIn names its holders), because moving it whole would drag along hunks you did not claim — pass `from` to take only the hunks one changelist holds, or use move_lines_to_changelist for hunk-level precision. movedCount reports how many of the requested files actually landed — which ones they are is your request minus skippedFiles. Files that are neither modified nor unversioned, or not found, are reported in skippedFiles; the call still succeeds.")
+    @McpDescription(
+        "Create a changelist and optionally put files in it. Modified files move WHOLE; unversioned (new) files are " +
+        "scheduled for addition (add-to-VCS) and named in the output — not when `from` is set. A file whose hunks " +
+        "are SPLIT across changelists is refused (split_across_changelists, naming its holders): moving it whole " +
+        "would drag hunks you did not claim, usually a parallel session's — pass `from`, or use " +
+        "move_lines_to_changelist. OUTPUT (text): a headline counting what landed plus anything scheduled for " +
+        "addition, then one `SKIPPED <path> — <reason>` line per refusal. Paths that moved are NOT echoed back. " +
+        "Files neither modified nor unversioned, or missing, are SKIPPED; the call still succeeds."
+    )
     suspend fun create_changelist(
         @McpDescription("Name for the new changelist.") name: String,
         @McpDescription("Optional description/comment for the changelist.") comment: String? = null,
         @McpDescription("Optional project-relative file paths to put into the new changelist (modified files are moved, new files are added).") files: List<String>? = null,
         @McpDescription("If true, make the new changelist the active (default) one.") setActive: Boolean = false,
         @McpDescription("Optional name of the changelist to take the changes FROM. It is a strict filter over every path in `files`: ONLY what that changelist holds moves. A file it does not hold is skipped with reason not_in_source — including a file that sits entirely in some other changelist, and including a new/unversioned file, which no changelist holds (so a scoped call never schedules one for addition). On a file split across changelists, only its hunks in `from` move and the rest stay put. Must name an existing changelist, and must differ from the target. Omit to move whole files, which then refuses split files.") from: String? = null,
-    ): CreateResult {
+    ): String {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
         val clm = ChangeListManagerImpl.getInstanceImpl(project)
@@ -128,16 +162,24 @@ class ChangelistToolset : McpToolset {
             if (setActive) clm.setDefaultChangeList(newList)
         }
         val outcome = putFilesInto(project, clm, basePath, name, files ?: emptyList(), from)
-        return CreateResult(name = name, movedCount = outcome.moved.size, addedFiles = outcome.added, skippedFiles = outcome.skipped)
+        return renderOutcome("created '$name'", outcome)
     }
 
     @McpTool
-    @McpDescription("Put files into an EXISTING changelist. Currently-modified files are moved whole; unversioned (new) files are scheduled for addition (add-to-VCS) into it and reported in addedFiles (not when `from` is set — see below). A file whose hunks are SPLIT across several changelists is refused with reason split_across_changelists (remainingIn names its holders), because moving it whole would drag along hunks you did not claim — typically a parallel session's. For a split file either pass `from` to take only the hunks one changelist holds, or use move_lines_to_changelist for hunk-level precision. movedCount reports how many of the requested files actually landed — which ones they are is your request minus skippedFiles. Fails if the target changelist does not exist (it is never auto-created) or is read-only. Files that are neither modified nor unversioned, or not found, are reported in skippedFiles.")
+    @McpDescription(
+        "Put files into an EXISTING changelist. Modified files move WHOLE; unversioned (new) files are scheduled " +
+        "for addition (add-to-VCS) and named in the output — not when `from` is set. A file whose hunks are SPLIT " +
+        "across changelists is refused (split_across_changelists, naming its holders): moving it whole would drag " +
+        "hunks you did not claim, usually a parallel session's — pass `from`, or use move_lines_to_changelist. " +
+        "OUTPUT (text): a headline counting what landed plus anything scheduled for addition, then one `SKIPPED " +
+        "<path> — <reason>` line per refusal. Paths that moved are NOT echoed back. Fails if the changelist does " +
+        "not exist (never auto-created) or is read-only."
+    )
     suspend fun move_to_changelist(
         @McpDescription("Name of the existing target changelist.") name: String,
         @McpDescription("Project-relative file paths to put into the target changelist (modified files are moved, new files are added).") files: List<String>,
         @McpDescription("Optional name of the changelist to take the changes FROM. It is a strict filter over every path in `files`: ONLY what that changelist holds moves. A file it does not hold is skipped with reason not_in_source — including a file that sits entirely in some other changelist, and including a new/unversioned file, which no changelist holds (so a scoped call never schedules one for addition). On a file split across changelists, only its hunks in `from` move and the rest stay put. Must name an existing changelist, and must differ from the target. Omit to move whole files, which then refuses split files.") from: String? = null,
-    ): MoveResult {
+    ): String {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
         val clm = ChangeListManagerImpl.getInstanceImpl(project)
@@ -147,15 +189,20 @@ class ChangelistToolset : McpToolset {
             if (target.isReadOnly) mcpFail("Changelist '$name' is read-only — refusing to write into a frozen changelist")
         }
         val outcome = putFilesInto(project, clm, basePath, name, files, from)
-        return MoveResult(movedCount = outcome.moved.size, addedFiles = outcome.added, skippedFiles = outcome.skipped)
+        return renderOutcome("moved into '$name'", outcome)
     }
 
     @McpTool
-    @McpDescription("Delete a changelist, relocating its files first. By default the files move to the active default changelist; pass moveContentsTo to send them to a specific existing changelist instead. Refuses to delete the default changelist. Fails if the named relocation target does not exist.")
+    @McpDescription(
+        "Delete a changelist, relocating its files first — to the active default changelist, or to moveContentsTo " +
+        "when given. Refuses to delete the default changelist. Fails if the named relocation target does not exist. " +
+        "Never touches file contents or VCS state, only the grouping. OUTPUT (text): one line naming the deleted " +
+        "changelist and where its files went."
+    )
     suspend fun delete_changelist(
         @McpDescription("Name of the changelist to delete.") name: String,
         @McpDescription("Name of an existing changelist to move this list's files into before deletion. Defaults to the active default changelist (whatever it is named).") moveContentsTo: String? = null,
-    ): DeleteResult {
+    ): String {
         val project = currentCoroutineContext().project
         val clm = ChangeListManagerImpl.getInstanceImpl(project)
         // Validate up front (read-only); fail fast before touching the update pipeline.
@@ -185,22 +232,21 @@ class ChangelistToolset : McpToolset {
             })
         }
         settle(clm)
-        return DeleteResult(deleted = true)
+        val where = moveContentsTo?.let { "'$it'" } ?: "the default changelist"
+        return "deleted '$name'; its files are now in $where"
     }
 
     @McpTool
     @McpDescription(
-        "Set a changelist's comment, which IntelliJ uses as the default commit message for that " +
-            "changelist. Draft the message from get_changelist_diff, then set it here so the IDE's " +
-            "commit dialog is pre-filled — the user reviews and commits without any copy/paste. " +
-            "IMPORTANT: this only works on a NAMED changelist; the default changelist's comment is " +
-            "ignored by the commit dialog (it shows the last commit message instead), so group the " +
-            "changes into a named changelist first. Setting a comment never commits or pushes.",
+        "Set a changelist's comment, which IntelliJ uses as the default commit message, so the commit dialog is " +
+        "pre-filled with no copy/paste. Draft it from get_changelist_diff. ONLY works on a NAMED changelist: the " +
+        "default one ignores its comment and shows the last commit message instead, so group changes into a named " +
+        "changelist first. Never commits or pushes. OUTPUT (text): one line saying whether the write stuck."
     )
     suspend fun set_changelist_comment(
         @McpDescription("Name of the changelist whose comment (default commit message) to set.") name: String,
         @McpDescription("The comment / default commit message to set on the changelist.") comment: String,
-    ): CommentResult {
+    ): String {
         val project = currentCoroutineContext().project
         val clm = ChangeListManagerImpl.getInstanceImpl(project)
         readAction {
@@ -216,45 +262,48 @@ class ChangelistToolset : McpToolset {
             current = readAction { clm.changeLists.firstOrNull { it.name == name }?.comment ?: "" }
             if (current == comment || ++attempt >= MAX_REAPPLY) break
         }
-        return CommentResult(applied = current == comment, length = current.length)
-    }
-
-    @McpTool
-    @McpDescription(
-        "Read one changelist's full comment (its default commit message). list_changelists only " +
-            "reports each comment's first line, so use this when you need the whole text — typically " +
-            "to extend an existing message before writing it back with set_changelist_comment.",
-    )
-    suspend fun get_changelist_comment(
-        @McpDescription("Name of the changelist whose comment to read.") name: String,
-    ): GetCommentResult {
-        val project = currentCoroutineContext().project
-        val clm = ChangeListManager.getInstance(project)
-        return readAction {
-            val list = clm.changeLists.firstOrNull { it.name == name } ?: mcpFail("Changelist '$name' not found")
-            GetCommentResult(name = list.name, comment = list.comment ?: "")
+        return if (current == comment) {
+            "comment set on '$name' (${current.length}c) — it pre-fills the commit dialog"
+        } else {
+            "FAILED to set the comment on '$name'; it still reads ${current.length}c. " +
+                "A trailing VCS update reverted it — retry, or set it in the IDE."
         }
     }
 
     @McpTool
     @McpDescription(
-        "Move only specific line ranges (hunks) of a single file into an EXISTING changelist, leaving " +
-            "the file's other changes where they are. Use this when a file contains changes from more " +
-            "than one source (e.g. parallel sessions): read get_changelist_diff to find your hunks, then " +
-            "move just those. For ADDED or MODIFIED hunks, pass lineRanges = the 1-based CURRENT-file line " +
-            "numbers (the '+' side of each '@@ -a,b +c,d @@' header). For PURE DELETION hunks (only '-' " +
-            "lines, no '+' line to point at), pass deletedLineRanges = the 1-based OLD-file line numbers of " +
-            "the removed lines (count up from 'a' in the '@@ -a,b +c,d @@' header). Each hunk that overlaps " +
-            "a requested range on its matching side is moved. Fails if the target changelist is missing " +
-            "(never auto-created) or read-only. If the file cannot be partially tracked, use " +
-            "move_to_changelist to move the whole file instead.",
+        "Read one changelist's full comment (its default commit message). list_changelists shows only the first " +
+        "line, so use this when you need the whole text — typically to extend it before writing it back with " +
+        "set_changelist_comment. OUTPUT (text): the comment itself, nothing wrapping it."
+    )
+    suspend fun get_changelist_comment(
+        @McpDescription("Name of the changelist whose comment to read.") name: String,
+    ): String {
+        val project = currentCoroutineContext().project
+        val clm = ChangeListManager.getInstance(project)
+        return readAction {
+            val list = clm.changeLists.firstOrNull { it.name == name } ?: mcpFail("Changelist '$name' not found")
+            (list.comment ?: "").ifEmpty { "changelist '$name' has no comment" }
+        }
+    }
+
+    @McpTool
+    @McpDescription(
+        "Move only specific hunks of ONE file into an existing changelist, leaving its other changes where they are " +
+        "— for a file holding changes from more than one source (parallel sessions). For ADDED/MODIFIED hunks pass " +
+        "lineRanges = 1-based CURRENT-file lines (the '+' side of `@@ -a,b +c,d @@`). For PURE DELETION hunks pass " +
+        "deletedLineRanges = 1-based OLD-file lines (count up from 'a'). Every hunk overlapping a requested range " +
+        "on its matching side moves. Fails if the target is missing (never auto-created) or read-only; if the file " +
+        "cannot be partially tracked, use move_to_changelist instead. OUTPUT (text): one line counting the hunks " +
+        "moved and naming their spans, plus an UNMATCHED line for any requested range covering no hunk — no " +
+        "UNMATCHED line means every range landed."
     )
     suspend fun move_lines_to_changelist(
         @McpDescription("Name of the existing target changelist.") name: String,
         @McpDescription("Project-relative path of the file whose hunks to move.") file: String,
         @McpDescription("1-based, inclusive CURRENT-file line ranges to move (the diff's '+' side) — for added/modified hunks. May be empty if you are only moving deletions via deletedLineRanges.") lineRanges: List<LineRange>,
         @McpDescription("1-based, inclusive OLD-file line ranges to move (the diff's '-' side) — use this to target PURE DELETION hunks, which have no '+' line. Optional; omit when there are no deletions to move.") deletedLineRanges: List<LineRange>? = null,
-    ): MoveLinesResult {
+    ): String {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
         val deleted = deletedLineRanges ?: emptyList()
@@ -282,7 +331,7 @@ class ChangelistToolset : McpToolset {
                 ?: mcpFail("Line-status tracker for '$file' is no longer available")
 
             val ranges = tracker.getRanges().orEmpty()
-            val movedHunks = mutableListOf<MovedHunk>()
+            val movedHunks = mutableListOf<String>()
             val matched = BooleanArray(lineRanges.size)
             val matchedDeleted = BooleanArray(deleted.size)
             val toMove = mutableListOf<Range>()
@@ -304,7 +353,7 @@ class ChangelistToolset : McpToolset {
                 }
                 if (hit) {
                     toMove += r
-                    movedHunks += MovedHunk(formatSpan(r), r.changelistId)
+                    movedHunks += formatSpan(r)
                 }
             }
             // Move each matched hunk by its Range. Reassigning a hunk's changelist doesn't change line
@@ -313,11 +362,39 @@ class ChangelistToolset : McpToolset {
             // Report requested ranges that matched no hunk; deleted-side ranges are prefixed "-" to distinguish.
             val unmatched = lineRanges.filterIndexed { j, _ -> !matched[j] }.map { "${it.start}-${it.end}" } +
                 deleted.filterIndexed { j, _ -> !matchedDeleted[j] }.map { "-${it.start}..${it.end}" }
-            MoveLinesResult(file = file, targetChangelist = name, movedHunks = movedHunks, unmatchedRanges = unmatched)
+            buildString {
+                append("moved ").append(movedHunks.size).append(" hunk(s) of '").append(file)
+                append("' into '").append(name).append("'")
+                if (movedHunks.isNotEmpty()) append(": ").append(movedHunks.joinToString(" "))
+                if (unmatched.isNotEmpty()) {
+                    append("\nUNMATCHED (no hunk covers these — check them against `git diff -U0`): ")
+                    append(unmatched.joinToString(" "))
+                }
+            }
         }
     }
 
     // --- helpers -------------------------------------------------------------------------------
+
+    /**
+     * What create/move report. Only the surprises are spelled out: the count of what landed, then the
+     * files that were scheduled for addition and the ones that were refused, each with its reason. The
+     * paths that moved are not echoed — the caller passed them in, and repeating them costs the caller
+     * on every later request for nothing.
+     */
+    private fun renderOutcome(headline: String, outcome: MoveOutcome): String = buildString {
+        append(headline).append(": ").append(outcome.moved.size).append(" moved")
+        if (outcome.added.isNotEmpty()) {
+            append(", ").append(outcome.added.size).append(" scheduled for addition: ")
+            append(outcome.added.joinToString(" "))
+        }
+        for (skipped in outcome.skipped) {
+            append("\nSKIPPED ").append(skipped.path).append(" — ").append(skipped.reason)
+            skipped.remainingIn?.takeIf { it.isNotEmpty() }?.let {
+                append(" (still in: ").append(it.joinToString(", ")).append(")")
+            }
+        }
+    }
 
     /**
      * Ensure a [PartialLocalLineStatusTracker] exists for [vFile] with its hunks computed. Trackers are

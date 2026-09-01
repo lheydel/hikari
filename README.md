@@ -4,7 +4,9 @@ A JetBrains IDE plugin that adds tools to the IDE's built-in MCP server, for an 
 Claude Code. It exposes IntelliJ's **local changelists** — read changelist state, draft commit messages
 from a changelist's diff, and organize modified files into changelists for you to review and commit —
 and the IDE's **code intelligence**: a reverse call tree that answers what transitively depends on a
-declaration, following what it overrides so an implementation reaches its port's callers.
+declaration, following what it overrides so an implementation reaches its port's callers, and a file
+outline that gives you a file's declarations with their line ranges so you can read just the part you
+need.
 
 > **Read and organize only.** This plugin never mutates file contents or VCS state — it never commits,
 > pushes, stashes, reverts, shelves, or edits a file. It reads state and rearranges which changelist a
@@ -29,6 +31,9 @@ this*: the bundled server ships no find-usages, call hierarchy or inheritance to
 changed a function is left grepping for its name — which finds nothing at all for an implementation whose
 only caller goes through the interface it implements. `call_tree` is that missing hop.
 
+Reading a file to find your way around it is the other cost. `outline` gives you the declarations, their
+signatures and the lines they span — no bodies — so the read that follows is a targeted one.
+
 ## Requirements
 
 - **IntelliJ IDEA 2026.1 or newer** (build `261+`). The MCP server is bundled in the IDE since 2025.2, and
@@ -42,11 +47,11 @@ only caller goes through the interface it implements. `call_tree` is that missin
 
 | Tool | Arguments | Purpose |
 |---|---|---|
-| `list_changelists` | — | Read every local changelist with its files (project-relative paths; `changeType` ∈ MODIFIED/ADDED/DELETED/MOVED), plus `isDefault`/`isReadOnly`, and the project's `unversionedFiles` (new, not-yet-tracked files). Comments come back as `commentFirstLine` (subject line, capped at 120 chars) and `commentLength` — read one in full with `get_changelist_comment`. |
+| `list_changelists` | — | Read every local changelist with its files, plus the project's unversioned (new, not-yet-tracked) files. One `# name [flags] — first line of comment (Nc)` line per changelist, then one indented `<T> <project-relative path>` line per file, T being M/A/D/M for modified/added/deleted/moved. New files are listed under `# unversioned` with a `?`. Read a comment in full with `get_changelist_comment`. |
 | `refresh_changelists` | — | Re-scan the working tree and recompute changelist state. **Call this after editing files outside the IDE** (e.g. via Claude's own tools), before `list_changelists` — IntelliJ doesn't see external edits until it refreshes. |
 | `get_changelist_diff` | `name` | Unified diff for one changelist (capped at 200 KB), for drafting a commit message. |
-| `create_changelist` | `name`, `comment?`, `files?`, `setActive?`, `from?` | Create a changelist and put files into it: modified files are moved **whole**; **unversioned (new) files are scheduled for addition** and reported in `addedFiles`. `movedCount` says how many landed. Non-matching / missing files go to `skippedFiles`; the call still succeeds. |
-| `move_to_changelist` | `name`, `files`, `from?` | Put files into an **existing** changelist (modified → moved whole, new → scheduled for addition / `addedFiles`). `from` scopes the move to one changelist's changes — see [Parallel sessions](#parallel-sessions). `movedCount` says how many landed — which ones is the request minus `skippedFiles`; everything else comes back in `skippedFiles` with a reason (`split_across_changelists`, `not_in_source`, `move_incomplete`, …) and `remainingIn`. Fails if the changelist is missing (never auto-creates) or read-only. |
+| `create_changelist` | `name`, `comment?`, `files?`, `setActive?`, `from?` | Create a changelist and put files into it: modified files are moved **whole**; **unversioned (new) files are scheduled for addition** and named in the output. A headline counts what landed; each refused file gets a `SKIPPED` line with its reason. Non-matching / missing files are skipped; the call still succeeds. |
+| `move_to_changelist` | `name`, `files`, `from?` | Put files into an **existing** changelist (modified → moved whole, new → scheduled for addition). `from` scopes the move to one changelist's changes — see [Parallel sessions](#parallel-sessions). A headline counts what landed; everything else gets a `SKIPPED` line with a reason (`split_across_changelists`, `not_in_source`, `move_incomplete`, …) and, where it matters, which changelists still hold it. Fails if the changelist is missing (never auto-creates) or read-only. |
 | `move_lines_to_changelist` | `name`, `file`, `lineRanges` | Move only specific **hunks** of one file into an existing changelist, leaving its other changes in place. See [Parallel sessions](#parallel-sessions). |
 | `get_changelist_comment` | `name` | Read one changelist's full comment. `list_changelists` only broadcasts each comment's first line, so fetch the whole text here when extending an existing message. |
 | `set_changelist_comment` | `name`, `comment` | Set a changelist's comment, which IntelliJ uses as the **default commit message** — so the commit dialog is pre-filled. **Use a *named* changelist:** the default `Changes` ignores its comment (the dialog shows the last commit message instead). |
@@ -56,13 +61,18 @@ only caller goes through the interface it implements. `call_tree` is that missin
 
 | Tool | Arguments | Purpose |
 |---|---|---|
-| `call_tree` | `file`, `symbol`, `depth?`, `format?` | Reverse call tree from one declaration: what calls it, transitively, in a single call. At every node it follows both the references to the declaration and the declaration it **overrides**, so an implementation reaches the callers of the port it implements. Project sources only. `depth` defaults to 2 (max 5); `format` defaults to `grouped` (callers per module and file, about a third the size of `tree`, which adds per-node paths and line numbers). `tree` comes back flat, breadth-first, each node carrying `calls` — the index of the node it calls, `-1` for the seed. |
+| `call_tree` | `file`, `symbol`, `depth?` | Reverse call tree from one declaration: what calls it, transitively, in a single call. At every node it follows both the references to the declaration and the declaration it **overrides**, so an implementation reaches the callers of the port it implements. Project sources only. `depth` defaults to 2 (max 5). Indentation means "calls the line above"; marks are `*` never expanded, `^` reached because the seed overrides it, `(test)` test source. |
+| `outline` | `file` | Every declaration in one file as `START-END signature`, indented under whatever it is nested in — never any body text. Read it instead of a whole file, then read just the range you want. Seed `call_tree` with the leading identifier of a line's signature, or with the `[symbol]` in brackets where one is given (which means the bare name would not resolve). |
 
 Reading a `call_tree` result:
 
-- **`status`** is `complete`, `stopped_at_depth` or `stopped_unresolved`. On either stopped status,
-  **`frontier`** lists the nodes that were never expanded as `{file, symbol}` pairs — feed one back as the
-  next seed to continue rather than reading a partial answer as a total one.
+- **Results are plain text, not JSON.** Line 1 gives the seed, its caller count, the depth and the status
+  (`complete`, `stopped_at_depth`, `stopped_unresolved`); line 2 says whether the override hop resolved.
+- **A `*` on a symbol means it was never expanded**, so a stopped run is never mistaken for a total answer.
+  Re-run deeper, or seed a fresh `call_tree` on any marked node, to continue.
+- **Locations are compressed.** A `dirs:` table numbers each directory as `D<n>`, and a node's location is
+  `D<n>/<file>:<line>` — or `D<n>.<ext>:<line>`, which means the file is the declaration's own outermost
+  segment plus that extension, so `Foo.bar  D2.kt:9` is `D2/Foo.kt` line 9.
 - **Zero callers is not dead code.** `@Scheduled` tasks, `@EventListener` handlers, `@Bean` endpoints and
   route files have no callers by construction, and static search cannot tell them from genuinely unused
   code. That reading only applies when **`superHop.available`** is true; when it is false, no override hop
@@ -71,11 +81,22 @@ Reading a `call_tree` result:
   they are a real answer to "what depends on this", they just must not read as production impact.
   Classification keys on path and file name, not on the source root's kind, which misses test code that
   lives in a Gradle *main* source set.
-- **`staleness`** says whether the IDE's copy of the seed file still matches what is on disk. Call
-  `refresh_changelists` first when you have edited files outside the IDE: without it, the answer is built
-  from the file as the IDE last saw it.
+- **A `STALE:` line** appears when the IDE has not re-scanned the seed file since it changed on disk. Call
+  `refresh_changelists` first when you have edited files outside the IDE: without it, the answer may be
+  built from the file as the IDE last saw it. `outline` reports the same line, for the same reason.
+
+`outline` builds on the IDE's own structure view, so it covers every language the IDE understands and each
+gives its own idea of a signature. A trailing `... N more not listed` line means the output cap bound, and
+reading the file directly is the way to get the rest.
+
+They compose: outline a file, then pass an entry's `symbol` straight to `call_tree` to ask what
+depends on that declaration.
 
 Each family registers as its own `McpToolset`; they appear alongside the IDE's built-in MCP tools.
+
+**Every tool answers in plain text, not JSON.** A tool result is re-read on every later request in a
+session, so its size is a recurring cost rather than a one-off; text carries the same information at
+roughly a third of the tokens. Each tool's description states the format its output uses.
 
 ## Intended workflow
 
@@ -94,8 +115,8 @@ Each family registers as its own `McpToolset`; they appear alongside the IDE's b
 
 When several agent sessions share one working tree, a single file can hold changes from more than one
 session, and its hunks end up spread over several changelists. Moving such a file whole would drag another
-session's work along, so the whole-file tools refuse it: it comes back in `skippedFiles` as
-`split_across_changelists`, with `remainingIn` naming every changelist holding a piece. Ways forward:
+session's work along, so the whole-file tools refuse it: it comes back as a `SKIPPED` line reading
+`split_across_changelists`, naming every changelist that holds a piece. Ways forward:
 
 - **`from`** — `move_to_changelist(name, files, from = "Changes")` takes only the changes that changelist
   holds. The hunks sitting in other changelists stay exactly where they are. Use this when your work is
@@ -154,10 +175,14 @@ JetBrains MCP tool:
 ## Limitations
 
 - **Single VCS root.** Path resolution uses `project.basePath`; multi-root projects are out of scope.
-- **No streaming.** Large diffs are truncated at 200 KB with a marker.
+- **No streaming.** Large diffs are truncated at 200 KB with a marker, and an `outline` that would
+  grow past 24 KB of declaration text ends with a `... N more not listed` line.
 - **Partial moves are best-effort** — see [Parallel sessions](#parallel-sessions).
 - **The override hop is contributed per language, and Kotlin is the language contributed.** Elsewhere
   `call_tree` reports `superHop.available: false` and walks references only.
+- **`outline` needs the IDE to contribute a structure view for the file's language**, which it does for
+  every language it parses; for one where it does not, the tool says so rather than returning an empty
+  outline.
 
 ## Development notes
 
@@ -186,8 +211,11 @@ src/main/kotlin/dev/kosmio/mcppowerup/
     ChangelistToolset.kt                # the McpToolset with all changelist tool methods
     Models.kt                           # @Serializable result/DTO types
   analysis/
-    AnalysisToolset.kt                  # the McpToolset with call_tree
-    CallTreeTraversal.kt                # the traversal engine
+    AnalysisToolset.kt                  # the McpToolset with call_tree and outline
+    CallTreeTraversal.kt                # the traversal engine behind call_tree
+    OutlineBuilder.kt                   # the structure-view walk behind outline
+    DeclarationSymbols.kt               # the symbol grammar the tools name declarations with
+    SourceFiles.kt                      # locating a file and reporting how fresh the IDE's copy of it is
     Models.kt                           # @Serializable result/DTO types
     SuperDeclarationProvider.kt         # the per-language override hop's extension point
     kt/

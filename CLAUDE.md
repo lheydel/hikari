@@ -26,6 +26,13 @@ reading the plugin name gets.
 - Artifact: `build/distributions/intellij-mcp-powerup-<version>.zip`.
 - **Every code change needs a reinstall to test live**: Settings → Plugins → ⚙ → Install Plugin from Disk →
   the zip → **restart**. There is no hot reload. `./gradlew runIde` gives an isolated sandbox IDE instead.
+- **Point `runIde` at a throwaway project, never one your own IDE has open.** Two IDEs sharing a project
+  directory both own its `.idea/workspace.xml`, so the sandbox rewrites the changelist grouping the real IDE
+  is holding. A scratch Gradle project is enough and takes seconds to make — but it must be a *configured*
+  one (`settings.gradle.kts` + `build.gradle.kts` + `src/main/kotlin`): in a bare directory with no module or
+  source root, `ReferencesSearch` over `projectScope` finds nothing and `call_tree` answers zero callers for a
+  declaration that plainly has one. Add the path to `<sandbox>/config/options/trusted-paths.xml` first, or the
+  IDE blocks on the trust dialog and never opens the MCP port.
 - **Exercise a tool end-to-end without installing: `./gradlew runIde --args="<project path>"`, and speak MCP to
   the sandbox.** Put
   `<application><component name="McpServerSettings"><option name="enableMcpServer" value="true"/></component></application>`
@@ -69,15 +76,22 @@ reading the plugin name gets.
 
 - A toolset class implements the marker `com.intellij.mcpserver.McpToolset`; each tool is a `suspend fun`
   annotated `@McpTool` + `@McpDescription`. Annotate **every parameter** too — those descriptions become the JSON schema.
-- Tool name = method name. Return an `@Serializable` data class (in `Models.kt`). Errors: `mcpFail("…")` (returns Nothing).
-- **A return type must not be recursive.** The framework post-processes the generated JSON schema by walking
-  `properties`/`items` in lockstep with the `SerialDescriptor`
-  (`com.intellij.mcpserver.impl.util.Schema_utilKt.removeRequiredForDefaultValues`), and a self-referential
-  `@Serializable` class derails that walk with `IllegalArgumentException: Element class
+- Tool name = method name. Errors: `mcpFail("…")` (returns Nothing).
+- **Every tool returns `String`, and the text it returns is the contract.** A `@Serializable` return type is
+  supported (the bundled `SearchToolset` uses one) but costs 2–4× the tokens for the same information, and a
+  tool result is re-read on every later request in the session. The bundled `ReadToolset.read_file` returns a
+  bare `String`. `@Serializable` survives only on tool
+  *parameters* (`LineRange`), where the framework still generates an input schema.
+- **The `@McpDescription` carries the output format, since no schema describes it.** Each one opens
+  its output paragraph with `OUTPUT (text):` and then says what the lines and marks mean. A format change
+  that does not update that sentence ships a tool whose caller cannot read it.
+- **A `@Serializable` type reachable from a tool signature must not be recursive.** The framework
+  post-processes the generated JSON schema by walking `properties`/`items` in lockstep with the
+  `SerialDescriptor` (`com.intellij.mcpserver.impl.util.Schema_utilKt.removeRequiredForDefaultValues`), and a
+  self-referential class derails that walk with `IllegalArgumentException: Element class
   kotlinx.serialization.json.JsonObject is not a JsonPrimitive`. The **whole toolset** is then dropped —
   `ReflectionToolsProvider` logs `Cannot load tools for …` and its tools never reach `tools/list`, with nothing
-  visible to a caller. Flatten instead: `call_tree`'s `tree` is a flat breadth-first list whose nodes carry the
-  index of the node they call.
+  visible to a caller. String returns sidestep this for results; it still binds any parameter type.
 - Project: `currentCoroutineContext().project` (import `com.intellij.mcpserver.project`).
 - Register each toolset with its own `<mcpToolset>` in `plugin.xml`.
 - The framework auto-injects a `projectPath` parameter into every tool — that's the multi-project/instance
@@ -130,12 +144,15 @@ reading the plugin name gets.
 - **The whole-file tools refuse a file split across changelists rather than consolidating it.** Passing
   every entry to `moveChangesTo` would consolidate it, but the hunks in the other changelists usually
   belong to a parallel session. Callers scope with `from` or go hunk-level with `move_lines_to_changelist`.
-- **Tool results are re-read on every later request, so output size is a recurring cost.**
-  Results carry only what the caller cannot already derive: `list_changelists` reports a comment's first
-  line plus its length (the full text is one `get_changelist_comment` away), the move tools report
-  `movedCount` rather than echoing the paths that were passed in, and `set_changelist_comment` reports
-  whether the write stuck. `addedFiles`, `skippedFiles` and the diff stay in full — those are the
-  surprises. `SESSION_TOKEN_COST.md` has the measurements.
+- **Tool results are re-read on every later request, so output size is a recurring cost.** It is the reason
+  every tool answers in text rather than JSON, and the reason results carry only what the caller cannot
+  already derive: `list_changelists` reports a comment's first line plus its length (the full text is one
+  `get_changelist_comment` away), the move tools count what landed rather than echoing back the paths they
+  were given, and `set_changelist_comment` reports only whether the write stuck. What was scheduled for
+  addition, what was skipped and why, and the diff stay in full — those are the surprises.
+  `SESSION_TOKEN_COST.md` has the measurements.
+- **A result that repeats itself is the expensive mistake, not a verbose field name.** Look for repetition
+  before shortening anything.
 - **`set_changelist_comment` pre-fills the commit dialog only for a NAMED changelist.** The default ("Changes")
   ignores its description — the dialog shows the last commit message instead. Always group into a named changelist.
 - **Agent file edits bypass IntelliJ's VFS.** Anything written to disk outside the IDE is invisible until a
@@ -150,24 +167,15 @@ except where noted.
 
 **The budget binds on output size, not on wall-clock.** A slow call costs the caller once; a large result is
 re-read on every later request in the session, which is the `carried` cost `SESSION_TOKEN_COST.md` measures.
-Serialising the same traversal both ways, at `chars / 4` per that document's convention:
+The same seed at each depth, at `chars / 4` per that document's convention:
 
-| Seed | Depth | Nodes | `tree` | `grouped` |
-|---|---:|---:|---:|---:|
-| `TransactionSpi.execute` | 1 | 64 | 16 775 c ≈ 4 194 t | 5 251 c ≈ **1 313 t** |
-| `TransactionSpi.execute` | 2 | 117 | 30 119 c ≈ 7 530 t | 7 601 c ≈ **1 900 t** |
-| `Button` | 1 | 43 | 7 725 c ≈ 1 931 t | 2 420 c ≈ **605 t** |
-| `Button` | 2 | 109 | 19 732 c ≈ 4 933 t | 5 523 c ≈ **1 381 t** |
+| Seed | Depth | Nodes | Result |
+|---|---:|---:|---:|
+| `TransactionSpi.execute` | 1 | 65 | 4 547 c ≈ **1 136 t** |
+| `TransactionSpi.execute` | 2 | 118 | 8 280 c ≈ **2 070 t** |
 
-`grouped` runs 3–4× cheaper and carries the same caller set — it drops per-node paths, line numbers and tree
-structure, keeping module, file name, counts and declaration names. So `grouped` is the default and the tool
-description steers callers to it; `tree` is opt-in, for when the file locations are the point. The file name
-is what keeps `grouped` usable on the frontend, where a whole workspace is one IntelliJ module and grouping
-by module alone says nothing.
+Measured against the shipped output over MCP, not a serialization sketch.
 
-- **`format: grouped | tree` is a caller argument, not a mode the tool picks.** At `grouped` sizes, output
-  stops being the binding constraint at the depths that matter, so there is no width threshold at which the
-  traversal refuses to expand.
 - **Depth is the knob that bounds cost.** Warming does not rescue a wide traversal: `TransactionSpi.execute`
   at depth 5 costs 23 854 ms with every index hot and still leaves 59 nodes unexpanded. Only the seed's own
   search gets cheap warm (449 ms → 43 ms); every element found at depth pays its own first touch, so level 1
@@ -178,10 +186,10 @@ by module alone says nothing.
 - **A long read action gets cancelled.** `CannotReadException` killed the depth-5 wide traversal repeatedly
   here; at tens of seconds, a write arriving mid-run is likely rather than rare. The platform retries this
   for free — the constraint it puts on the design is granularity and PSI lifetime, in § *Threading*.
-- **A stopped run returns its frontier as re-seedable `{file, symbol}` pairs**, so a caller can continue
-  deterministically instead of receiving a silently partial answer. The same coordinates are what the
-  traversal re-resolves against after a cancelled unit, so resumability and cancellation-recovery are one
-  mechanism rather than two.
+- **A stopped run marks every unexpanded node with `*`**, so a caller continues deterministically instead
+  of reading a silently partial answer as a total one. Every line already carries its location, so a mark
+  is all that is needed. The `{file, symbol}` coordinates are what the traversal re-resolves a node against
+  after a cancelled read action, so resumability and cancellation-recovery are one mechanism.
 - Seed distribution, for sizing: domain ports measure 1–3 first-level callers (`UserCommands.kt`, 13–366 ms
   each); `TransactionSpi`'s own methods measure 68 / 5 / 2 / 1; the `ui` package's components run 0–43 raw
   references, median around 10, with `Field` (162) and `Button` (171) above it.
@@ -194,6 +202,28 @@ seed), so implementation lookup does not need its own cap.
 Fanning searches across cores buys little — 10 257 ms against 12 448 ms sequential on eleven cores, with the
 parallel pass run first so the warm advantage went to the sequential one. Measured inside an inspection's
 read action, which may serialise the children, so treat it as a lower bound rather than a settled ceiling.
+
+## Outline sizing (calibrated)
+
+Measured across the 321 source files over 4 KB in `~/Bazar/engineering/skeleton-kotlin-react`, counting
+declaration nodes that pass the enclosing-declaration filter.
+
+| | entries |
+|---|---:|
+| median file | 21 |
+| p90 | 64 |
+| widest (`schemas.test.ts`, `AuthSessionSteps.kt`) | 127 |
+
+The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSION_TOKEN_COST.md`.
+
+- **An outline is cheaper than the file it describes, but not by a constant factor.** The 775-line
+  `OAuthConsentDecisionSteps.kt` outlines to 10 160 c against 39 047 c of source, roughly a quarter. A
+  declaration-dense file inverts that: `AuthProperties.kt` is 5 284 c of source and outlines to 6 517 c,
+  because a one-line property costs as much to describe as to read. That inversion is what the cap is
+  for — `MAX_OUTLINE_CHARS`, 24 KB, which sits above every file measured here and so binds only on the
+  pathological one.
+- **A capped outline reports `truncated` and counts what it dropped**, and the entries kept are a prefix
+  of document order, so every remaining `parent` index still points at an entry that is present.
 
 ## Analysis tools — language-specific surfaces
 
@@ -216,6 +246,20 @@ read action, which may serialise the children, so treat it as a lower bound rath
   test side drops from 26 nodes, mostly step-definition lambdas, to 12 real declarations. The `KtProperty` nodes, which
   are real call sites, survive either way. Skip the placeholder segments when building a qualified name too,
   so a property declared inside a lambda reads `UserDeleteFeatureImpl.invoke.deleted`.
+- **A structure-view model builds with no editor and no open file:**
+  `LanguageStructureViewBuilder.getInstance().getStructureViewBuilder(psiFile)` answers a
+  `TreeBasedStructureViewBuilder` whose `createStructureViewModel(null)` works from a background read
+  action — `KotlinFirStructureViewFactory$1` for Kotlin, `TypeScriptStructureViewBuilderFactory$1` for
+  TypeScript. Dispose the model when done. `ItemPresentation.presentableText` must be read while the
+  model is alive, and it is where the signature comes from: Kotlin answers `execute(suspend () -> T): T`,
+  while TypeScript answers the bare `Button` for a component bound to a variable — a language that has no
+  signature to give is not an error, it is that language's structure view.
+- **The structure view is not a declaration list, and `PsiNameIdentifierOwner` is exactly the filter that
+  makes it one.** It also emits the `PsiFile` root, `JSXXmlLiteralExpression` for a component's returned
+  markup, and one `ES6ExportSpecifier` per re-export — on `Button.tsx` those are all it emits beyond the
+  declarations. Every node that survives the filter is also found by the traversal's own `declarationsOf`
+  walk, which is what makes the `#N` ordinals agree between the tools: the 775-line
+  `OAuthConsentDecisionSteps.kt` yields 97 outline entries, all of whose symbols resolve.
 - **`TestSourcesFilter.isTestSources` classifies nothing in this project.** It returns false for every node of
   the `TransactionSpi.execute` tree, including the step definitions, because they live in a Gradle *main*
   source set at `platform/server/test/src/main/kotlin`. Test detection has to key on path or package, and it
@@ -228,6 +272,9 @@ read action, which may serialise the children, so treat it as a lower bound rath
 - `src/main/kotlin/dev/kosmio/mcppowerup/changelist/Models.kt` — `@Serializable` result DTOs for the changelist tools.
 - `src/main/kotlin/dev/kosmio/mcppowerup/analysis/AnalysisToolset.kt` — the analysis `McpToolset`.
 - `src/main/kotlin/dev/kosmio/mcppowerup/analysis/CallTreeTraversal.kt` — the traversal engine behind `call_tree`.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/OutlineBuilder.kt` — the structure-view walk behind `outline`.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/DeclarationSymbols.kt` — the symbol grammar `outline` emits and `call_tree` accepts; each must derive it from here or they stop composing.
+- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/SourceFiles.kt` — resolving a requested path and reporting how fresh the IDE's copy of it is.
 - `src/main/kotlin/dev/kosmio/mcppowerup/analysis/Models.kt` — `@Serializable` result DTOs for the analysis tools.
 - `src/main/kotlin/dev/kosmio/mcppowerup/analysis/SuperDeclarationProvider.kt` — the override hop's extension point.
 - `src/main/kotlin/dev/kosmio/mcppowerup/analysis/kt/KotlinSuperDeclarationProvider.kt` — its Kotlin implementation.

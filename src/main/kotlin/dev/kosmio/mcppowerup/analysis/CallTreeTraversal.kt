@@ -5,22 +5,21 @@ import com.intellij.mcpserver.mcpFail
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
-import com.intellij.psi.PsiNameIdentifierOwner
 import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.SmartPsiElementPointer
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import dev.kosmio.mcppowerup.ProjectPaths
-import java.io.IOException
-import java.nio.file.Files
-import java.nio.file.InvalidPathException
-import java.nio.file.Path
+import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.declarationsOf
+import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.isDeclaration
+import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.matchesFor
+import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.parseSymbol
+import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.qualifiedName
 
 /**
  * The reverse call tree: from a seed declaration, breadth-first to what references it, following at each
@@ -54,18 +53,17 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         val callers = mutableListOf<WorkNode>()
     }
 
-    /** The seed, resolved, with the two facts about it the result reports alongside the tree. */
+    /** The seed, resolved, with the facts about it the result reports alongside the tree. */
     private class Seed(val node: WorkNode, val language: String, val providers: List<String>)
 
-    /** Per-file `qualified name -> offsets in document order`, the index [symbolFor] assigns `#N` from. */
-    private val ordinalIndexes = HashMap<String, Map<String, List<Int>>>()
+    private val symbols = DeclarationSymbols()
 
     private val providersByLanguage = HashMap<Language, List<SuperDeclarationProvider>>()
 
-    suspend fun run(seedRef: NodeRef, maxDepth: Int, format: String): CallTreeResult {
-        val vFile = findVirtualFile(seedRef.file)
+    suspend fun run(seedRef: NodeRef, maxDepth: Int): String {
+        val vFile = SourceFiles.find(basePath, seedRef.file)
             ?: mcpFail("File '${seedRef.file}' not found under the project. Pass a project-relative path.")
-        val staleness = stalenessOf(vFile, seedRef.file)
+        val staleness = SourceFiles.stalenessOf(vFile, seedRef.file)
         val seed = smartReadAction(project) { resolveSeed(vFile, seedRef, staleness) }
 
         val seen = hashSetOf(seed.node.key)
@@ -102,17 +100,36 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
             frontierRefs.isEmpty() -> STATUS_COMPLETE
             else -> STATUS_STOPPED_AT_DEPTH
         }
-        return CallTreeResult(
-            seed = seed.node.ref,
-            depth = maxDepth,
-            status = status,
-            callerCount = seen.size - 1,
-            superHop = SuperHop(seed.language, seed.providers.isNotEmpty(), seed.providers),
-            staleness = staleness,
-            grouped = if (format == FORMAT_GROUPED) groupedOf(seed.node) else null,
-            tree = if (format == FORMAT_TREE) treeOf(seed.node, unexpanded) else null,
-            frontier = frontierRefs,
-        )
+        return (header(seed, maxDepth, status, seen.size - 1, frontierRefs.size, staleness) +
+            treeOf(seed.node, unexpanded)).joinToString("\n")
+    }
+
+    /**
+     * The lines every result opens with: what was asked, what came back, and the facts that decide how
+     * an empty answer must be read — whether the override hop resolved, and whether the IDE's copy of
+     * the seed file is current.
+     */
+    private fun header(
+        seed: Seed,
+        maxDepth: Int,
+        status: String,
+        callerCount: Int,
+        unexpandedCount: Int,
+        staleness: Staleness,
+    ): List<String> {
+        val out = mutableListOf<String>()
+        out += "$SEED_ARROW ${seed.node.ref.symbol}  ($callerCount callers, depth $maxDepth, $status)"
+        out += if (seed.providers.isEmpty()) {
+            "override hop: UNAVAILABLE for ${seed.language} — an empty result says nothing either way here"
+        } else {
+            "override hop: ${seed.language} via ${seed.providers.joinToString("+")}"
+        }
+        if (unexpandedCount > 0) {
+            out += "$UNEXPANDED_MARK marks the $unexpandedCount node(s) never expanded — re-run at depth " +
+                "${maxDepth + 1}, or seed a new call_tree on any of them, to continue"
+        }
+        if (!staleness.ideCopyMatchesDisk) out += STALE_LINE
+        return out
     }
 
     /**
@@ -138,10 +155,9 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
     }
 
     /**
-     * The declaration a reference belongs to: its nearest enclosing [PsiNameIdentifierOwner] carrying a
-     * real name. That predicate is language-neutral and answers the question that actually matters — is
-     * this a declaration rather than a file or markup. A [PsiFile] is not one and neither is a JSX
-     * literal, so they drop out, while the property declarations, which are real call sites, stay.
+     * The declaration a reference belongs to: its nearest enclosing one under
+     * [DeclarationSymbols.isDeclaration], the same predicate the symbol grammar is built on, so every
+     * node this traversal reports can also be named.
      */
     private fun enclosingDeclaration(from: PsiElement): PsiElement? {
         var current: PsiElement? = from.parent
@@ -150,18 +166,6 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
             current = current.parent
         }
         return null
-    }
-
-    /**
-     * Whether an element is a declaration a caller can be attributed to. The platform gives synthetic
-     * elements a placeholder name in angle brackets rather than no name at all — a Kotlin lambda answers
-     * `<anonymous>`, not null — and those are dead ends: nothing references a lambda, so a tree that
-     * stopped at one would report a leaf where the enclosing function is the real caller.
-     */
-    private fun isDeclaration(element: PsiElement): Boolean {
-        if (element !is PsiNameIdentifierOwner) return false
-        val name = element.name ?: return false
-        return !name.startsWith("<")
     }
 
     /** A node's identity: its file and the offset of the declaration. Null outside project sources. */
@@ -175,7 +179,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         val psiFile = element.containingFile ?: return null
         val vFile = psiFile.virtualFile ?: return null
         val relativePath = ProjectPaths.relativize(basePath, vFile.path)
-        val symbol = symbolFor(element, relativePath, psiFile) ?: return null
+        val symbol = symbols.symbolFor(element, relativePath, psiFile) ?: return null
         return WorkNode(
             ref = NodeRef(relativePath, symbol),
             key = key,
@@ -196,15 +200,15 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         val matches = matchesFor(declarations, name)
         val element = when {
             ordinal != null -> matches.getOrNull(ordinal - 1)
-                ?: mcpFail("'${seedRef.symbol}' selects declaration #$ordinal of ${matches.size} named '$name' in ${seedRef.file}.${staleSuffix(staleness)}")
+                ?: mcpFail("'${seedRef.symbol}' selects declaration #$ordinal of ${matches.size} named '$name' in ${seedRef.file}.${SourceFiles.staleSuffix(staleness)}")
             matches.size == 1 -> matches.single()
             matches.isEmpty() -> mcpFail(
-                "No declaration named '$name' in ${seedRef.file}.${staleSuffix(staleness)} " +
+                "No declaration named '$name' in ${seedRef.file}.${SourceFiles.staleSuffix(staleness)} " +
                     "Declarations there: ${declarations.mapNotNull { qualifiedName(it) }.distinct().joinToString(", ")}",
             )
             else -> mcpFail(
                 "'$name' is ambiguous in ${seedRef.file}. Re-run with one of these exact symbol values: " +
-                    matches.mapNotNull { symbolFor(it, seedRef.file, psiFile) }.joinToString(", "),
+                    matches.mapNotNull { symbols.symbolFor(it, seedRef.file, psiFile) }.joinToString(", "),
             )
         }
         val key = keyOf(element)
@@ -217,71 +221,11 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
 
     /** Re-resolve a node from its coordinates after the element behind it was invalidated. */
     private fun resolveRef(ref: NodeRef): PsiElement? {
-        val vFile = findVirtualFile(ref.file) ?: return null
+        val vFile = SourceFiles.find(basePath, ref.file) ?: return null
         val psiFile = PsiManager.getInstance(project).findFile(vFile) ?: return null
         val (name, ordinal) = parseSymbol(ref.symbol)
         val matches = matchesFor(declarationsOf(psiFile), name)
         return if (ordinal != null) matches.getOrNull(ordinal - 1) else matches.singleOrNull()
-    }
-
-    /**
-     * The declarations [name] selects: the ones whose qualified name is exactly [name], or — when a
-     * caller passed a bare name rather than a qualified one — the ones it is the trailing segment of.
-     */
-    private fun matchesFor(declarations: List<PsiElement>, name: String): List<PsiElement> {
-        val exact = declarations.filter { qualifiedName(it) == name }
-        if (exact.isNotEmpty()) return exact
-        return declarations.filter { qualifiedName(it)?.endsWith(".$name") == true }
-    }
-
-    /**
-     * The declaration's name qualified by its enclosing declarations, with a `#N` suffix when the file
-     * holds more than one declaration under that qualified name. That suffix is what makes every [NodeRef]
-     * this traversal emits resolve back to exactly one declaration.
-     */
-    private fun symbolFor(element: PsiElement, relativePath: String, psiFile: PsiFile): String? {
-        val qualified = qualifiedName(element) ?: return null
-        val offsets = ordinalIndexes.getOrPut(relativePath) { indexOrdinals(psiFile) }[qualified]
-        if (offsets == null || offsets.size <= 1) return qualified
-        val position = offsets.indexOf(element.textOffset)
-        return if (position < 0) qualified else "$qualified#${position + 1}"
-    }
-
-    /**
-     * The declaration's name qualified by the enclosing declarations that have real names. The synthetic
-     * ones are skipped rather than spelled out, so a property declared inside a lambda reads
-     * `UserDeleteFeatureImpl.invoke.deleted` — still unique within the file, with `#N` for what is not.
-     */
-    private fun qualifiedName(element: PsiElement): String? {
-        val parts = mutableListOf<String>()
-        var current: PsiElement? = element
-        while (current != null && current !is PsiFile) {
-            if (isDeclaration(current)) parts += (current as PsiNameIdentifierOwner).name.orEmpty()
-            current = current.parent
-        }
-        return if (parts.isEmpty()) null else parts.asReversed().joinToString(".")
-    }
-
-    private fun indexOrdinals(psiFile: PsiFile): Map<String, List<Int>> {
-        val index = HashMap<String, MutableList<Int>>()
-        for (declaration in declarationsOf(psiFile)) {
-            val qualified = qualifiedName(declaration) ?: continue
-            index.getOrPut(qualified) { mutableListOf() } += declaration.textOffset
-        }
-        return index
-    }
-
-    /** Every declaration in the file, in document order. */
-    private fun declarationsOf(psiFile: PsiFile): List<PsiElement> {
-        val out = mutableListOf<PsiElement>()
-        fun walk(element: PsiElement) {
-            for (child in element.children) {
-                if (isDeclaration(child)) out += child
-                walk(child)
-            }
-        }
-        walk(psiFile)
-        return out
     }
 
     private fun providersFor(language: Language): List<SuperDeclarationProvider> =
@@ -308,94 +252,52 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         return TEST_FILE_SUFFIXES.any { fileName.endsWith(it) }
     }
 
-    private fun findVirtualFile(path: String): VirtualFile? {
-        val absolute = if (path.startsWith("/")) path else "$basePath/$path"
-        return LocalFileSystem.getInstance().findFileByPath(absolute)
+    /**
+     * The tree, depth-first, one line per node: indentation means "calls the line above".
+     *
+     * Locations are compressed, because they would otherwise be 70% of the result: every directory is
+     * listed once up front as `D<n>`, and a node's location is `D<n>/<file>:<line>`. Where the file is
+     * named after the declaration's own outermost segment — which it is for most of a Kotlin or
+     * TypeScript codebase — the name is dropped too and the location reads `D<n>.<ext>:<line>`, the file
+     * being that segment plus that extension.
+     */
+    private fun treeOf(seed: WorkNode, unexpanded: Set<String>): List<String> {
+        val directories = LinkedHashMap<String, Int>()
+        val body = mutableListOf<String>()
+        fun walk(node: WorkNode, depth: Int) {
+            val marks = buildString {
+                if (node.overrides) append(OVERRIDE_MARK)
+                if (node.key in unexpanded) append(UNEXPANDED_MARK)
+                if (node.isTest) append(TEST_MARK)
+            }
+            val path = node.ref.file
+            val directory = path.substringBeforeLast('/', "")
+            val index = directories.getOrPut(directory) { directories.size }
+            body += "  ".repeat(depth) + "${node.ref.symbol}$marks  ${location(node, index)}:${node.line}"
+            for (caller in node.callers) walk(caller, depth + 1)
+        }
+        walk(seed, 0)
+        if (seed.callers.isEmpty()) return body + NO_CALLERS_LINE
+        val table = directories.keys.mapIndexed { index, directory -> "D$index $directory" }
+        return listOf(DIRECTORY_HEADING) + table + body
     }
 
     /**
-     * Whether the IDE's copy of the file still matches what is on disk. An edit written outside the IDE
-     * does not reach the VFS until a re-scan, and the answer gives no other sign of it: the
-     * traversal runs happily against the file as the IDE last saw it.
+     * A node's file, against its directory's `D<n>`: the bare name when it cannot be derived from the
+     * symbol, and just the extension when it can.
      */
-    private fun stalenessOf(vFile: VirtualFile, relativePath: String): Staleness {
-        val path = try {
-            Path.of(vFile.path)
-        } catch (_: InvalidPathException) {
-            return Staleness(relativePath, true)
+    private fun location(node: WorkNode, directoryIndex: Int): String {
+        val fileName = node.fileName
+        val outermost = node.ref.symbol.substringBefore('.').substringBefore('#')
+        val extension = fileName.substringAfterLast('.', "")
+        return if (extension.isNotEmpty() && fileName == "$outermost.$extension") {
+            "D$directoryIndex.$extension"
+        } else {
+            "D$directoryIndex/$fileName"
         }
-        val matches = try {
-            Files.exists(path) && Files.size(path) == vFile.length &&
-                Files.getLastModifiedTime(path).toMillis() <= vFile.timeStamp
-        } catch (_: IOException) {
-            return Staleness(relativePath, true)
-        }
-        return if (matches) Staleness(relativePath, true) else Staleness(relativePath, false, STALE_HINT)
     }
-
-    private fun staleSuffix(staleness: Staleness): String =
-        if (staleness.ideCopyMatchesDisk) "" else " $STALE_HINT"
-
-    private fun parseSymbol(symbol: String): Pair<String, Int?> {
-        val hash = symbol.lastIndexOf('#')
-        if (hash <= 0) return symbol to null
-        val ordinal = symbol.substring(hash + 1).toIntOrNull() ?: return symbol to null
-        return symbol.substring(0, hash) to ordinal
-    }
-
-    /** Flatten the traversal breadth-first, each node pointing at the index of the node it calls. */
-    private fun treeOf(seed: WorkNode, unexpanded: Set<String>): List<CallNode> {
-        val out = mutableListOf<CallNode>()
-        val queue = ArrayDeque<Pair<WorkNode, Int>>()
-        queue += seed to -1
-        while (queue.isNotEmpty()) {
-            val (node, calls) = queue.removeFirst()
-            val index = out.size
-            out += CallNode(
-                symbol = node.ref.symbol,
-                file = node.ref.file,
-                line = node.line,
-                module = node.module,
-                isTest = node.isTest,
-                calls = calls,
-                overrides = node.overrides,
-                unexpanded = node.key in unexpanded,
-            )
-            for (caller in node.callers) queue += caller to index
-        }
-        return out
-    }
-
-    private fun groupedOf(seed: WorkNode): GroupedCallers {
-        val all = mutableListOf<WorkNode>()
-        fun collect(node: WorkNode) {
-            for (caller in node.callers) {
-                all += caller
-                collect(caller)
-            }
-        }
-        collect(seed)
-        val (test, production) = all.partition { it.isTest }
-        return GroupedCallers(production = groupByModule(production), test = groupByModule(test))
-    }
-
-    private fun groupByModule(nodes: List<WorkNode>): List<CallerModule> =
-        nodes.groupBy { it.module }
-            .map { (module, inModule) ->
-                CallerModule(
-                    module = module,
-                    callerCount = inModule.size,
-                    files = inModule.groupBy { it.fileName }
-                        .map { (fileName, inFile) -> CallerFile(fileName, inFile.map { it.ref.symbol }) }
-                        .sortedBy { it.file },
-                )
-            }
-            .sortedByDescending { it.callerCount }
 
     companion object {
-        const val FORMAT_GROUPED = "grouped"
-        const val FORMAT_TREE = "tree"
-
         const val STATUS_COMPLETE = "complete"
         const val STATUS_STOPPED_AT_DEPTH = "stopped_at_depth"
         const val STATUS_STOPPED_UNRESOLVED = "stopped_unresolved"
@@ -405,8 +307,24 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
 
         private const val NO_MODULE = "<no module>"
 
-        private const val STALE_HINT =
-            "The IDE's copy of this file is older than what is on disk — call refresh_changelists, then run this again."
+        /** Prefixes the seed line, so the direction of the answer is unmistakable: callers OF this. */
+        private const val SEED_ARROW = "callers of"
+
+        private const val OVERRIDE_MARK = "^"
+        private const val UNEXPANDED_MARK = "*"
+        private const val TEST_MARK = " (test)"
+
+        private const val DIRECTORY_HEADING =
+            "dirs (a location is D<n>/<file>:<line>; D<n>.<ext> means the file is the declaration's " +
+                "outermost segment plus that extension):"
+
+        private const val NO_CALLERS_LINE =
+            "no callers found — framework entry points (@Scheduled, @EventListener, @Bean, route files) " +
+                "have none by construction, so this is NOT evidence of dead code"
+
+        private const val STALE_LINE =
+            "STALE: the IDE has not re-scanned this file since it changed on disk — " +
+                "call refresh_changelists, then run this again"
 
         /** Path segments that mark test sources, whatever Gradle source set they sit in. */
         private val TEST_DIRECTORIES =
