@@ -147,19 +147,14 @@ class ChangelistToolset : McpToolset {
         @McpDescription("Name for the new changelist.") name: String,
         @McpDescription("Optional description/comment for the changelist.") comment: String? = null,
         @McpDescription("Optional project-relative file paths to put into the new changelist (modified files are moved, new files are added).") files: List<String>? = null,
-        @McpDescription("If true, make the new changelist the active (default) one.") setActive: Boolean = false,
         @McpDescription("Optional name of the changelist to take the changes FROM. It is a strict filter over every path in `files`: ONLY what that changelist holds moves. A file it does not hold is skipped with reason not_in_source — including a file that sits entirely in some other changelist, and including a new/unversioned file, which no changelist holds (so a scoped call never schedules one for addition). On a file split across changelists, only its hunks in `from` move and the rest stay put. Must name an existing changelist, and must differ from the target. Omit to move whole files, which then refuses split files.") from: String? = null,
     ): String {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
         val clm = changeListManagerImpl(project)
-        // Create + (optional) set-default on the updater thread so they are serialized with the update
-        // pipeline. putFilesInto then runs on the same serialized queue, so the new list already exists
-        // when the move runs.
-        onUpdaterThread(clm) {
-            val newList = clm.addChangeList(name, comment ?: "")
-            if (setActive) clm.setDefaultChangeList(newList)
-        }
+        // Create on the updater thread so it is serialized with the update pipeline. putFilesInto then runs
+        // on the same serialized queue, so the new list already exists when the move runs.
+        onUpdaterThread(clm) { clm.addChangeList(name, comment ?: "") }
         val outcome = putFilesInto(project, clm, basePath, name, files ?: emptyList(), from)
         return renderOutcome("created '$name'", outcome)
     }
@@ -664,7 +659,7 @@ class ChangelistToolset : McpToolset {
      * pipeline guarantees it cannot interleave with an update's worker snapshot/rebuild, so a
      * trailing/racing update seeds from the mutated worker and preserves the change. [mutate] runs OFF the
      * EDT and holds no read lock — wrap any reads it does in a runReadAction { }. The ChangeListManagerImpl
-     * mutators it calls (moveChangesTo / editComment / addChangeList / setDefaultChangeList /
+     * mutators it calls (moveChangesTo / editComment / addChangeList /
      * removeChangeList) acquire read access internally.
      */
     private suspend fun onUpdaterThread(clm: ChangeListManagerImpl, mutate: () -> Unit) {
