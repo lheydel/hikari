@@ -4,7 +4,7 @@
          it stays scoped to this optional config file, and the plugin still loads in a Java-less IDE. -->
     <depends>com.intellij.modules.java</depends>
 
-    <extensions defaultExtensionNs="dev.kosmio.mcp-powerup">
-        <superDeclarationProvider implementation="dev.kosmio.mcppowerup.analysis.kt.KotlinSuperDeclarationProvider"/>
+    <extensions defaultExtensionNs="dev.kosmio.hikari">
+        <superDeclarationProvider implementation="dev.kosmio.hikari.analysis.kt.KotlinSuperDeclarationProvider"/>
     </extensions>
 </idea-plugin>

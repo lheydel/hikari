@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.analysis
+package dev.kosmio.hikari.analysis
 
 import com.intellij.mcpserver.McpToolset
 import com.intellij.mcpserver.annotations.McpDescription

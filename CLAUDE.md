@@ -1,29 +1,33 @@
 # CLAUDE.md — working on this plugin
 
-A JetBrains plugin, id `dev.kosmio.mcp-powerup`, that contributes tools to IntelliJ's **bundled** MCP
+A JetBrains plugin, id `dev.kosmio.hikari`, that contributes tools to IntelliJ's **bundled** MCP
 server: changelist tools, and code-intelligence tools built on the IDE's indexes. See `README.md` for what it does, the tool surface, and install/connect
 steps — this file is for editing the code. Most of what's below is empirical: it was learned by hitting it, and is **not** visible from
 reading the source.
 
 ## Safety boundary (absolute)
 
-**Read and organize only — never mutate file contents or VCS state.** **Never** add commit / push / stash /
-revert / shelve, or any tool that edits file contents — not even a private helper that could be wired up
-later. The *one* mutation the plugin makes is scheduling new (unversioned) files for addition (add-to-VCS)
-so they can be grouped. The user reviews and commits in IntelliJ.
+**Every surface a program can reach reads and organizes only — it never mutates file contents or VCS
+state.** That is every MCP tool, any HTTP endpoint, and any other programmatic interface the plugin ever
+contributes, whatever the concern. **Never** expose commit / push / stash / revert / shelve, or anything
+that edits file contents, through one of them. The *one* mutation such a surface makes is scheduling new
+(unversioned) files for addition (add-to-VCS) so they can be grouped. The user reviews and commits in
+IntelliJ.
 
-The charter is per-plugin, not per-tool-family: it binds every tool this plugin ever contributes, whatever
-the concern. The plugin name does not mention "changelist", so this paragraph is the signal a session
-reading the plugin name gets.
+Actions the user triggers in the IDE UI, and the setup the plugin runs when the user opens a linked
+worktree, may change files and VCS state. **Code that does lives only in `dev.kosmio.hikari.worktree`, and
+no toolset imports it** — that separation is what keeps a mutating helper out of reach of every MCP tool.
+`grep -rn 'hikari.worktree' src/main/kotlin/dev/kosmio/hikari/changelist src/main/kotlin/dev/kosmio/hikari/analysis`
+must stay empty.
 
 ## Build & test
 
-- Java 21; Gradle wrapper is 9.4.1 (`./gradlew`).
+- Java 25 (`kotlin { jvmToolchain(25) }`, which Gradle finds in `~/.jdks`); Gradle wrapper is 9.4.1 (`./gradlew`).
 - `./gradlew buildPlugin verifyPlugin --no-build-cache` — keep `--no-build-cache`: when the user's IDE is
   building the same `build/` dir, the build cache fails to pack (`Could not get file mode …`). Not a code error.
 - **Always run `verifyPlugin`** — it binary-checks the plugin against the target IDE build(s) and catches API
   drift that compilation alone misses.
-- Artifact: `build/distributions/intellij-mcp-powerup-<version>.zip`.
+- Artifact: `build/distributions/hikari-<version>.zip`.
 - **Every code change needs a reinstall to test live**: Settings → Plugins → ⚙ → Install Plugin from Disk →
   the zip → **restart**. There is no hot reload. `./gradlew runIde` gives an isolated sandbox IDE instead.
 - **Point `runIde` at a throwaway project, never one your own IDE has open.** Two IDEs sharing a project
@@ -46,12 +50,16 @@ reading the plugin name gets.
 
 ## Toolchain — pinned for hard reasons (don't "upgrade" blindly)
 
-- `intellijIdea("2026.1.3")`, **not** `create("IC", …)` — IC/IU stopped being separate Maven artifacts at 2025.3.
+- `intellijIdea("2026.2")`, **not** `create("IC", …)` — IC/IU stopped being separate Maven artifacts at 2025.3.
 - IntelliJ Platform Gradle Plugin **2.16+** requires **Gradle 9+** (hence the 9.4.1 wrapper).
-- Kotlin **2.3.21** — the 2026.1 platform ships kotlin-stdlib metadata 2.3.0; an older compiler can't read it
-  and you get a cascade of bogus "unresolved reference" errors on platform classes.
-- `sinceBuild = "261"` (2026.1+): the `project` coroutine accessor resolves to `McpCallInfoKt`, which doesn't
-  exist pre-2026.1.
+- Kotlin **2.3.21** — the 2026.2 platform ships kotlin-stdlib metadata 2.4.0, and a compiler reads metadata at
+  most one minor version ahead of its own; an older one gives a cascade of bogus "unresolved reference" errors
+  on platform classes.
+- **JVM 25**: 2026.2 runs on JBR 25, and the IntelliJ Platform Gradle Plugin sets that as a *task-level*
+  convention on every Kotlin compile task (`KotlinJvmToolchainConventionsKt`). It outranks a project-level
+  `kotlin { compilerOptions { jvmTarget } }`, so pinning a lower target there leaves `compileJava` and
+  `compileKotlin` inconsistent and the build fails.
+- `sinceBuild = "262"` (2026.2+): `GitWorkingTreesService.deleteWorkingTree` exists only from 2026.2.
 - Dependencies that aren't obvious: `bundledPlugin("com.intellij.mcpServer")`;
   `bundledModule("intellij.platform.vcs.impl")` (for `ChangeListManagerEx`, the patch builder, the
   line-status tracker, `ChangeListManagerImpl.editComment`); `bundledModule("intellij.platform.vcs.impl.shared")`
@@ -59,20 +67,23 @@ reading the plugin name gets.
   `bundledPlugin("com.intellij.java")` (for `PsiMethod.findSuperMethods`), used only by the Kotlin
   override hop. `kotlinx-serialization-json` is `compileOnly` — the platform ships its own; bundling clashes.
 - **`verifyPlugin` reads the root descriptor only, never an optional `<depends config-file=…>` one.** So the
-  Java dependency and the `supportsKotlinPluginMode` declaration that `mcp-powerup-kotlin.xml` carries are
+  Java dependency and the `supportsKotlinPluginMode` declaration that `hikari-kotlin.xml` carries are
   invisible to it, and it reports the plugin as using Java classes without declaring Java. Moving those to
   `plugin.xml` would make the whole plugin, changelist tools included, refuse to load in an IDE without Java,
   so the problem is listed in `verifier-ignored-problems.txt` (wired via `pluginVerification.ignoredProblemsFile`).
   That file reaches problems only — the matching *warning* stands on every run and does not fail the build.
-- The plugin id must **not** contain the word "intellij" (the verifier rejects it) — hence
-  `dev.kosmio.mcp-powerup`. The repository name and the distribution archive name may.
+- **The verifier restricts the plugin's id and its display name by two different word lists.** The id must
+  not contain a product name such as "intellij" or "rider" (`PluginIdVerifierKt`). The `<name>` must not
+  contain "plugin", "JetBrains", "IDEA" or a product name, matched as a case-insensitive substring
+  (`PluginBeanValidatorKt.PLUGIN_NAME_RESTRICTED_WORDS`), so even a name that merely spells "idea" inside
+  it fails. The repository name and the distribution archive name are not checked.
 - **`<supportsKotlinPluginMode supportsK2="true"/>` goes in `plugin.xml`, not in the optional Kotlin config file
   it gates.** The loader reads `org.jetbrains.kotlin.supportsKotlinPluginMode` off the ROOT descriptor
   (`KotlinK2ModeCompatibilityCheckerKt.getSupportKotlinPluginModeEPs`) to decide whether to load that config file
   at all. Declared inside the file, the file is skipped in K2 mode behind a WARN — `… was not loaded` — and the
   override hop then reports itself unavailable with nothing to say why.
 
-## The MCP tool API (2026.1)
+## The MCP tool API (2026.2)
 
 - A toolset class implements the marker `com.intellij.mcpserver.McpToolset`; each tool is a `suspend fun`
   annotated `@McpTool` + `@McpDescription`. Annotate **every parameter** too — those descriptions become the JSON schema.
@@ -267,19 +278,19 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 
 ## Source layout
 
-- `src/main/kotlin/dev/kosmio/mcppowerup/ProjectPaths.kt` — project-relative path helpers, shared by every toolset this plugin contributes.
-- `src/main/kotlin/dev/kosmio/mcppowerup/changelist/ChangelistToolset.kt` — the changelist `McpToolset`, its tools, private helpers.
-- `src/main/kotlin/dev/kosmio/mcppowerup/changelist/Models.kt` — `@Serializable` result DTOs for the changelist tools.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/AnalysisToolset.kt` — the analysis `McpToolset`.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/CallTreeTraversal.kt` — the traversal engine behind `call_tree`.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/OutlineBuilder.kt` — the structure-view walk behind `outline`.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/DeclarationSymbols.kt` — the symbol grammar `outline` emits and `call_tree` accepts; each must derive it from here or they stop composing.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/SourceFiles.kt` — resolving a requested path and reporting how fresh the IDE's copy of it is.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/Models.kt` — `@Serializable` result DTOs for the analysis tools.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/SuperDeclarationProvider.kt` — the override hop's extension point.
-- `src/main/kotlin/dev/kosmio/mcppowerup/analysis/kt/KotlinSuperDeclarationProvider.kt` — its Kotlin implementation.
+- `src/main/kotlin/dev/kosmio/hikari/ProjectPaths.kt` — project-relative path helpers, shared by every toolset this plugin contributes.
+- `src/main/kotlin/dev/kosmio/hikari/changelist/ChangelistToolset.kt` — the changelist `McpToolset`, its tools, private helpers.
+- `src/main/kotlin/dev/kosmio/hikari/changelist/Models.kt` — `@Serializable` result DTOs for the changelist tools.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/AnalysisToolset.kt` — the analysis `McpToolset`.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/CallTreeTraversal.kt` — the traversal engine behind `call_tree`.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/OutlineBuilder.kt` — the structure-view walk behind `outline`.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/DeclarationSymbols.kt` — the symbol grammar `outline` emits and `call_tree` accepts; each must derive it from here or they stop composing.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/SourceFiles.kt` — resolving a requested path and reporting how fresh the IDE's copy of it is.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/Models.kt` — `@Serializable` result DTOs for the analysis tools.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/SuperDeclarationProvider.kt` — the override hop's extension point.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/kt/KotlinSuperDeclarationProvider.kt` — its Kotlin implementation.
 - `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`.
-- `src/main/resources/META-INF/mcp-powerup-kotlin.xml` — loaded only when the Kotlin plugin is present.
+- `src/main/resources/META-INF/hikari-kotlin.xml` — loaded only when the Kotlin plugin is present.
 
 ## Inspecting platform APIs
 

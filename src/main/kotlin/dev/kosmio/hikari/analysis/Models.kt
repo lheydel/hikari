@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.analysis
+package dev.kosmio.hikari.analysis
 
 /**
  * A declaration's coordinates, in exactly the shape `call_tree` accepts as a seed: a project-relative

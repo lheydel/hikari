@@ -1,8 +1,8 @@
-package dev.kosmio.mcppowerup.analysis.kt
+package dev.kosmio.hikari.analysis.kt
 
 import com.intellij.lang.Language
 import com.intellij.psi.PsiElement
-import dev.kosmio.mcppowerup.analysis.SuperDeclarationProvider
+import dev.kosmio.hikari.analysis.SuperDeclarationProvider
 import org.jetbrains.kotlin.asJava.toLightMethods
 
 /**

@@ -1,4 +1,4 @@
-# MCP Powerup
+# hikari
 
 A JetBrains IDE plugin that adds tools to the IDE's built-in MCP server, for an MCP client such as
 Claude Code. It exposes IntelliJ's **local changelists** — read changelist state, draft commit messages
@@ -8,11 +8,14 @@ declaration, following what it overrides so an implementation reaches its port's
 outline that gives you a file's declarations with their line ranges so you can read just the part you
 need.
 
-> **Read and organize only.** This plugin never mutates file contents or VCS state — it never commits,
-> pushes, stashes, reverts, shelves, or edits a file. It reads state and rearranges which changelist a
-> change belongs to. Scheduling *new* files for addition (add-to-VCS) into a changelist — the git
-> equivalent of marking a new file to be tracked — is the single exception, and you still review and
-> commit manually. That boundary is absolute, and it does not widen with the tool surface.
+> **Read and organize only, for anything a program can reach.** No MCP tool, endpoint or other
+> programmatic interface of this plugin mutates file contents or VCS state — none commits, pushes,
+> stashes, reverts, shelves, or edits a file. They read state and rearrange which changelist a change
+> belongs to. Scheduling *new* files for addition (add-to-VCS) into a changelist — the git equivalent of
+> marking a new file to be tracked — is the single exception, and you still review and commit manually.
+> That boundary is absolute, and it does not widen with the tool surface. Only an action you trigger
+> yourself in the IDE, or the setup that runs when you open a linked worktree, may change files or VCS
+> state.
 
 ## Why
 
@@ -36,9 +39,9 @@ signatures and the lines they span — no bodies — so the read that follows is
 
 ## Requirements
 
-- **IntelliJ IDEA 2026.1 or newer** (build `261+`). The MCP server is bundled in the IDE since 2025.2, and
-  this plugin uses the 2026.1 MCP API (`McpToolset` + the `McpCallInfoKt` project accessor). It will not
-  load on older builds — `sinceBuild` is `261`.
+- **IntelliJ IDEA 2026.2 or newer** (build `262+`), or another JetBrains IDE on the 2026.2 platform. The
+  MCP server is bundled in the IDE since 2025.2, and this plugin uses its `McpToolset` API. It will not
+  load on older builds — `sinceBuild` is `262`.
 - Works on IDEA Community and Ultimate (since 2025.3 they're a single distribution).
 
 ## Tools
@@ -139,7 +142,7 @@ moved and which requested ranges matched nothing.
 ./gradlew buildPlugin
 ```
 
-Produces the installable archive at `build/distributions/intellij-mcp-powerup-<version>.zip`.
+Produces the installable archive at `build/distributions/hikari-<version>.zip`.
 
 Other useful tasks:
 
@@ -150,9 +153,10 @@ Other useful tasks:
 
 ## Install
 
-If the older **Changelist MCP** plugin (id `dev.kosmio.changelist-mcp`) is still installed, uninstall it
-first and restart: it has a different id, so the IDE treats it as a separate plugin, and with both
-installed, each registers `list_changelists` and the MCP server sees a name collision at runtime.
+If this plugin is installed under an earlier name — **MCP Powerup** (id `dev.kosmio.mcp-powerup`) or
+**Changelist MCP** (id `dev.kosmio.changelist-mcp`) — uninstall it first and restart: a different id makes
+the IDE treat it as a separate plugin, and with both installed, each registers the same MCP tool names and
+the MCP server sees a collision at runtime that nothing reports.
 
 Then, in your IDE: **Settings → Plugins → ⚙ → Install Plugin from Disk…**, pick the built `.zip`, and restart.
 
@@ -189,9 +193,10 @@ JetBrains MCP tool:
 The build targets a specific toolchain (each pinned for a concrete reason):
 
 - IntelliJ Platform Gradle Plugin **2.16.0** → requires **Gradle 9+** (wrapper is 9.4.1).
-- **Kotlin 2.3.21** — the 2026.1 platform ships kotlin-stdlib metadata 2.3.0; an older compiler can't read it.
-- **JVM 21**.
-- Platform dependency is `intellijIdea("2026.1.3")` (the `IC`/`IU` artifacts merged since 2025.3).
+- **Kotlin 2.3.21** — the 2026.2 platform ships kotlin-stdlib metadata 2.4.0, one minor version ahead,
+  which is as far ahead as a compiler reads.
+- **JVM 25**, the runtime 2026.2 ships with (`kotlin { jvmToolchain(25) }`).
+- Platform dependency is `intellijIdea("2026.2")` (the `IC`/`IU` artifacts merged since 2025.3).
 - Depends on the bundled `com.intellij.mcpServer` plugin and the bundled modules
   `intellij.platform.vcs.impl` (for `ChangeListManagerEx`, the patch builder, the line-status tracker) and
   `intellij.platform.vcs.impl.shared` (for `LocalRange`).
@@ -205,7 +210,7 @@ The build targets a specific toolchain (each pinned for a concrete reason):
 Source layout:
 
 ```
-src/main/kotlin/dev/kosmio/mcppowerup/
+src/main/kotlin/dev/kosmio/hikari/
   ProjectPaths.kt                       # project-relative path helpers, shared by every toolset this plugin contributes
   changelist/
     ChangelistToolset.kt                # the McpToolset with all changelist tool methods
@@ -221,5 +226,5 @@ src/main/kotlin/dev/kosmio/mcppowerup/
     kt/
       KotlinSuperDeclarationProvider.kt # its Kotlin implementation
 src/main/resources/META-INF/plugin.xml
-src/main/resources/META-INF/mcp-powerup-kotlin.xml   # loaded only when the Kotlin plugin is present
+src/main/resources/META-INF/hikari-kotlin.xml         # loaded only when the Kotlin plugin is present
 ```

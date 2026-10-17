@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.changelist
+package dev.kosmio.hikari.changelist
 
 import kotlinx.serialization.Serializable
 

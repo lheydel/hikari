@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.analysis
+package dev.kosmio.hikari.analysis
 
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile

@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.changelist
+package dev.kosmio.hikari.changelist
 
 import com.intellij.mcpserver.McpToolset
 import com.intellij.mcpserver.annotations.McpDescription
@@ -27,7 +27,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.Consumer
-import dev.kosmio.mcppowerup.ProjectPaths
+import dev.kosmio.hikari.ProjectPaths
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay

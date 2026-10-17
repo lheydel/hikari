@@ -15,7 +15,7 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        intellijIdea("2026.1.3")                  // unified IntelliJ IDEA distribution (IC/IU merged since 2025.3)
+        intellijIdea("2026.2")                    // unified IntelliJ IDEA distribution (IC/IU merged since 2025.3)
         bundledPlugin("com.intellij.mcpServer")   // bundled since 2025.2 — NOT the marketplace plugin
         // ChangeListManagerEx, IdeaTextPatchBuilder and UnifiedDiffWriter live in the VCS impl module,
         // which is not on the compile classpath by default (only the vcs API interface module is).
@@ -38,7 +38,7 @@ dependencies {
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
-            sinceBuild = "261"        // 2026.1+; the project accessor resolves to McpCallInfoKt (2026.1-only).
+            sinceBuild = "262"        // 2026.2+; GitWorkingTreesService.deleteWorkingTree exists only from 2026.2.
         }
         changeNotes = "Initial version"
     }
@@ -49,5 +49,5 @@ intellijPlatform {
     }
 }
 
-tasks.withType<JavaCompile> { sourceCompatibility = "21"; targetCompatibility = "21" }
-kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21) } }
+// 2026.2 runs on JBR 25, and the platform Gradle plugin sets Kotlin's jvmTarget to it on every compile task.
+kotlin { jvmToolchain(25) }

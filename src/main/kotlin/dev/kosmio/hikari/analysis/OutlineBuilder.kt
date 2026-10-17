@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.analysis
+package dev.kosmio.hikari.analysis
 
 import com.intellij.ide.structureView.StructureViewTreeElement
 import com.intellij.ide.structureView.TreeBasedStructureViewBuilder
@@ -13,7 +13,7 @@ import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
-import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.isDeclaration
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.isDeclaration
 
 /**
  * A file's declarations with their signatures and line ranges, bodies omitted, so a caller can make a

@@ -2,11 +2,11 @@
 // <depends config-file=...> one. Format: <plugin id>:<version, empty for any>:<problem regexp>.
 //
 // The Kotlin override hop calls PsiMethod.findSuperMethods, and its <depends>com.intellij.modules.java
-// </depends> lives in META-INF/mcp-powerup-kotlin.xml — where it belongs, since that file is also what
+// </depends> lives in META-INF/hikari-kotlin.xml — where it belongs, since that file is also what
 // registers the class using PsiMethod. Declaring it in plugin.xml instead would make the WHOLE plugin,
 // changelist tools included, refuse to load in an IDE without Java.
 //
 // The same blind spot leaves a WARNING standing on every run — the missing supportsKotlinPluginMode
 // declaration, which that config file also carries. Warnings are outside this file's reach, and a
 // warning does not fail the build.
-dev.kosmio.mcp-powerup::Dependency on Java plugin is not specified
+dev.kosmio.hikari::Dependency on Java plugin is not specified

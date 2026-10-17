@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.analysis
+package dev.kosmio.hikari.analysis
 
 import com.intellij.lang.Language
 import com.intellij.openapi.extensions.ExtensionPointName
@@ -30,6 +30,6 @@ interface SuperDeclarationProvider {
 
     companion object {
         val EP_NAME: ExtensionPointName<SuperDeclarationProvider> =
-            ExtensionPointName.create("dev.kosmio.mcp-powerup.superDeclarationProvider")
+            ExtensionPointName.create("dev.kosmio.hikari.superDeclarationProvider")
     }
 }

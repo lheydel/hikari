@@ -1,1 +1,1 @@
-rootProject.name = "intellij-mcp-powerup"
+rootProject.name = "hikari"

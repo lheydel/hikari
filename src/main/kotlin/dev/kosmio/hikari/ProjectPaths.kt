@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup
+package dev.kosmio.hikari
 
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangesUtil

@@ -1,4 +1,4 @@
-package dev.kosmio.mcppowerup.analysis
+package dev.kosmio.hikari.analysis
 
 import com.intellij.lang.Language
 import com.intellij.mcpserver.mcpFail
@@ -14,12 +14,12 @@ import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.SmartPsiElementPointer
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
-import dev.kosmio.mcppowerup.ProjectPaths
-import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.declarationsOf
-import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.isDeclaration
-import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.matchesFor
-import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.parseSymbol
-import dev.kosmio.mcppowerup.analysis.DeclarationSymbols.Companion.qualifiedName
+import dev.kosmio.hikari.ProjectPaths
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.declarationsOf
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.isDeclaration
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.matchesFor
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.parseSymbol
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.qualifiedName
 
 /**
  * The reverse call tree: from a seed declaration, breadth-first to what references it, following at each
