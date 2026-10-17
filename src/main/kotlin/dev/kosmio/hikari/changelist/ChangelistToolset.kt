@@ -15,7 +15,6 @@ import com.intellij.openapi.progress.util.ProgressIndicatorUtils
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
-import com.intellij.openapi.vcs.changes.ChangeListManagerEx
 import com.intellij.openapi.vcs.changes.ChangeListManagerImpl
 import com.intellij.openapi.vcs.changes.LocalChangeList
 import com.intellij.openapi.vcs.changes.VcsDirtyScopeManager
@@ -108,7 +107,7 @@ class ChangelistToolset : McpToolset {
         withContext(Dispatchers.IO) {
             VfsUtil.markDirtyAndRefresh(false, true, true, baseDir)
             VcsDirtyScopeManager.getInstance(project).markEverythingDirty()
-            val clm = ChangeListManagerImpl.getInstanceImpl(project)
+            val clm = changeListManagerImpl(project)
             clm.waitForUpdate()
             var guard = 0
             while (clm.isInUpdate() && guard++ < MAX_SETTLE_DRAINS) clm.waitForUpdate()
@@ -153,7 +152,7 @@ class ChangelistToolset : McpToolset {
     ): String {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
-        val clm = ChangeListManagerImpl.getInstanceImpl(project)
+        val clm = changeListManagerImpl(project)
         // Create + (optional) set-default on the updater thread so they are serialized with the update
         // pipeline. putFilesInto then runs on the same serialized queue, so the new list already exists
         // when the move runs.
@@ -182,7 +181,7 @@ class ChangelistToolset : McpToolset {
     ): String {
         val project = currentCoroutineContext().project
         val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
-        val clm = ChangeListManagerImpl.getInstanceImpl(project)
+        val clm = changeListManagerImpl(project)
         readAction {
             val target = clm.changeLists.firstOrNull { it.name == name }
                 ?: mcpFail("Changelist '$name' not found — refusing to auto-create it")
@@ -204,7 +203,7 @@ class ChangelistToolset : McpToolset {
         @McpDescription("Name of an existing changelist to move this list's files into before deletion. Defaults to the active default changelist (whatever it is named).") moveContentsTo: String? = null,
     ): String {
         val project = currentCoroutineContext().project
-        val clm = ChangeListManagerImpl.getInstanceImpl(project)
+        val clm = changeListManagerImpl(project)
         // Validate up front (read-only); fail fast before touching the update pipeline.
         readAction {
             val list = clm.changeLists.firstOrNull { it.name == name }
@@ -248,7 +247,7 @@ class ChangelistToolset : McpToolset {
         @McpDescription("The comment / default commit message to set on the changelist.") comment: String,
     ): String {
         val project = currentCoroutineContext().project
-        val clm = ChangeListManagerImpl.getInstanceImpl(project)
+        val clm = changeListManagerImpl(project)
         readAction {
             clm.changeLists.firstOrNull { it.name == name } ?: mcpFail("Changelist '$name' not found")
         }
@@ -320,7 +319,7 @@ class ChangelistToolset : McpToolset {
         }
 
         return edtWriteAction {
-            val clm = ChangeListManagerEx.getInstanceEx(project)
+            val clm = changeListManagerImpl(project)
             val target = clm.changeLists.firstOrNull { it.name == name }
                 ?: mcpFail("Changelist '$name' not found — refusing to auto-create it")
             if (target.isReadOnly) mcpFail("Changelist '$name' is read-only — refusing to write into a frozen changelist")
@@ -671,7 +670,7 @@ class ChangelistToolset : McpToolset {
     private suspend fun onUpdaterThread(clm: ChangeListManagerImpl, mutate: () -> Unit) {
         val latch = CountDownLatch(1)
         var failure: Throwable? = null
-        clm.executeOnUpdaterThread {
+        executeOnUpdaterThread(clm) {
             try {
                 mutate()
             } catch (t: Throwable) {
@@ -682,6 +681,39 @@ class ChangelistToolset : McpToolset {
         }
         withContext(Dispatchers.IO) { ProgressIndicatorUtils.awaitWithCheckCanceled(latch) }
         failure?.let { throw it }
+    }
+
+    /**
+     * The project's `ChangeListManagerImpl`, cast from `ChangeListManager.getInstance`. On 2026.3,
+     * `ChangeListManagerImpl.getInstanceImpl` and `ChangeListManagerEx.getInstanceEx` live on a Kotlin
+     * `Companion` that 2026.2 lacks, so a call compiled against 2026.3 fails on 2026.2.
+     *
+     * TODO: once `sinceBuild` is 263 or later, call `ChangeListManagerImpl.getInstanceImpl(project)` directly
+     *  and delete this function.
+     */
+    private fun changeListManagerImpl(project: Project): ChangeListManagerImpl =
+        ChangeListManager.getInstance(project) as ChangeListManagerImpl
+
+    /**
+     * Call `ChangeListManagerImpl.executeOnUpdaterThread` through reflection, because its parameter is a
+     * `Runnable` on 2026.2 and a `Function0<Unit>` on 2026.3: a compiled call binds one signature and
+     * throws `NoSuchMethodError` on the other platform. Reflection also hides the call from `verifyPlugin`,
+     * so a further signature change surfaces here, as an `mcpFail`, rather than as a verifier problem.
+     *
+     * TODO: once `sinceBuild` is 263 or later, call `clm.executeOnUpdaterThread(task)` directly and delete
+     *  this function.
+     */
+    private fun executeOnUpdaterThread(clm: ChangeListManagerImpl, task: () -> Unit) {
+        val method = ChangeListManagerImpl::class.java.methods.firstOrNull {
+            it.name == "executeOnUpdaterThread" && it.parameterCount == 1
+        } ?: mcpFail("ChangeListManagerImpl.executeOnUpdaterThread is missing from this IDE build")
+        val type = method.parameterTypes[0]
+        val argument: Any = when {
+            type.isInstance(task) -> task
+            type == Runnable::class.java -> Runnable(task)
+            else -> mcpFail("ChangeListManagerImpl.executeOnUpdaterThread takes an unsupported ${type.name}")
+        }
+        method.invoke(clm, argument)
     }
 
     /** Block until the ChangeListManager pipeline is quiescent. Must be called OFF any read/write lock. */

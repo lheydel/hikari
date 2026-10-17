@@ -1,8 +1,10 @@
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
+
 plugins {
     id("java")
-    kotlin("jvm") version "2.3.21"
+    kotlin("jvm") version "2.4.21"
     id("org.jetbrains.intellij.platform") version "2.16.0"
-    kotlin("plugin.serialization") version "2.3.21"
+    kotlin("plugin.serialization") version "2.4.21"
 }
 
 group = "dev.kosmio"
@@ -15,7 +17,7 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        intellijIdea("2026.2")                    // unified IntelliJ IDEA distribution (IC/IU merged since 2025.3)
+        intellijIdea("263.7031.23")               // 2026.3 EAP; unified IntelliJ IDEA distribution (IC/IU merged since 2025.3)
         bundledPlugin("com.intellij.mcpServer")   // bundled since 2025.2 — NOT the marketplace plugin
         // ChangeListManagerEx, IdeaTextPatchBuilder and UnifiedDiffWriter live in the VCS impl module,
         // which is not on the compile classpath by default (only the vcs API interface module is).
@@ -46,8 +48,19 @@ intellijPlatform {
         // The verifier reads plugin.xml only, so it cannot see what the optional Kotlin config file
         // declares; this file lists only what follows from that blind spot.
         ignoredProblemsFile = file("verifier-ignored-problems.txt")
+        // The default also fails on internal API usage, which the changelist tools cannot avoid:
+        // ChangeListManagerImpl, internal from 2026.3, is the only home of editComment.
+        failureLevel = listOf(
+            VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
+            VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
+        )
     }
 }
 
-// 2026.2 runs on JBR 25, and the platform Gradle plugin sets Kotlin's jvmTarget to it on every compile task.
-kotlin { jvmToolchain(25) }
+// 2026.2 and 2026.3 run on JBR 25, and the platform Gradle plugin sets Kotlin's jvmTarget to it on every compile task.
+kotlin {
+    jvmToolchain(25)
+    // 2026.3 adds default methods to McpToolset. The default mode compiles a bridge to each into every
+    // toolset, and those bridges reference methods 2026.2 lacks; this mode inherits the defaults instead.
+    compilerOptions { jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY) }
+}

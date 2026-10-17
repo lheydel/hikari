@@ -193,10 +193,11 @@ JetBrains MCP tool:
 The build targets a specific toolchain (each pinned for a concrete reason):
 
 - IntelliJ Platform Gradle Plugin **2.16.0** → requires **Gradle 9+** (wrapper is 9.4.1).
-- **Kotlin 2.3.21** — the 2026.2 platform ships kotlin-stdlib metadata 2.4.0, one minor version ahead,
-  which is as far ahead as a compiler reads.
-- **JVM 25**, the runtime 2026.2 ships with (`kotlin { jvmToolchain(25) }`).
-- Platform dependency is `intellijIdea("2026.2")` (the `IC`/`IU` artifacts merged since 2025.3).
+- **Kotlin 2.4.21** — 2026.3's bundled Kotlin plugin ships metadata 2.5.0, one minor version ahead, which
+  is as far ahead as a compiler reads.
+- **JVM 25**, the runtime 2026.2 and 2026.3 ship with (`kotlin { jvmToolchain(25) }`).
+- Platform dependency is `intellijIdea("263.7031.23")`, the 2026.3 EAP (the `IC`/`IU` artifacts merged since
+  2025.3); the plugin still loads from 2026.2 on, and `verifyPlugin` checks both.
 - Depends on the bundled `com.intellij.mcpServer` plugin and the bundled modules
   `intellij.platform.vcs.impl` (for `ChangeListManagerEx`, the patch builder, the line-status tracker) and
   `intellij.platform.vcs.impl.shared` (for `LocalRange`).

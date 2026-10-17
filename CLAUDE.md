@@ -25,8 +25,9 @@ must stay empty.
 - Java 25 (`kotlin { jvmToolchain(25) }`, which Gradle finds in `~/.jdks`); Gradle wrapper is 9.4.1 (`./gradlew`).
 - `./gradlew buildPlugin verifyPlugin --no-build-cache` — keep `--no-build-cache`: when the user's IDE is
   building the same `build/` dir, the build cache fails to pack (`Could not get file mode …`). Not a code error.
-- **Always run `verifyPlugin`** — it binary-checks the plugin against the target IDE build(s) and catches API
-  drift that compilation alone misses.
+- **Always run `verifyPlugin`** — it binary-checks the plugin against the newest build of every platform line
+  from `sinceBuild` on (2026.2.3 and the 2026.3 EAP) and catches API drift that compilation alone misses. A
+  compatibility problem fails it; internal API usage is reported without failing it (`failureLevel`).
 - Artifact: `build/distributions/hikari-<version>.zip`.
 - **Every code change needs a reinstall to test live**: Settings → Plugins → ⚙ → Install Plugin from Disk →
   the zip → **restart**. There is no hot reload. `./gradlew runIde` gives an isolated sandbox IDE instead.
@@ -50,16 +51,28 @@ must stay empty.
 
 ## Toolchain — pinned for hard reasons (don't "upgrade" blindly)
 
-- `intellijIdea("2026.2")`, **not** `create("IC", …)` — IC/IU stopped being separate Maven artifacts at 2025.3.
+- `intellijIdea("263.7031.23")`, the 2026.3 EAP, **not** `create("IC", …)` — IC/IU stopped being separate Maven
+  artifacts at 2025.3. Once 2026.3 is released, pin the released version instead.
 - IntelliJ Platform Gradle Plugin **2.16+** requires **Gradle 9+** (hence the 9.4.1 wrapper).
-- Kotlin **2.3.21** — the 2026.2 platform ships kotlin-stdlib metadata 2.4.0, and a compiler reads metadata at
-  most one minor version ahead of its own; an older one gives a cascade of bogus "unresolved reference" errors
-  on platform classes.
-- **JVM 25**: 2026.2 runs on JBR 25, and the IntelliJ Platform Gradle Plugin sets that as a *task-level*
+- Kotlin **2.4.21** — 2026.3's bundled Kotlin plugin ships jars with metadata 2.5.0, and a compiler reads
+  metadata at most one minor version ahead of its own; an older one fails with "Module was compiled with an
+  incompatible version of Kotlin", or a cascade of bogus "unresolved reference" errors on platform classes.
+- **JVM 25**: 2026.2 and 2026.3 run on JBR 25, and the IntelliJ Platform Gradle Plugin sets that as a *task-level*
   convention on every Kotlin compile task (`KotlinJvmToolchainConventionsKt`). It outranks a project-level
   `kotlin { compilerOptions { jvmTarget } }`, so pinning a lower target there leaves `compileJava` and
   `compileKotlin` inconsistent and the build fails.
 - `sinceBuild = "262"` (2026.2+): `GitWorkingTreesService.deleteWorkingTree` exists only from 2026.2.
+- **Built against 2026.3, loaded on 2026.2 too.** What 2026.3 changed in binary form, the code works around so
+  one build serves both lines:
+  - `ChangeListManagerImpl.executeOnUpdaterThread` takes a `Runnable` on 2026.2 and a `Function0` on 2026.3, so
+    `ChangelistToolset.executeOnUpdaterThread` calls it through reflection, out of `verifyPlugin`'s sight;
+  - `getInstanceImpl` / `getInstanceEx` sit on a Kotlin `Companion` on 2026.3, so
+    `ChangelistToolset.changeListManagerImpl` casts `ChangeListManager.getInstance` instead;
+  - `McpToolset` gained default methods on 2026.3, so the Kotlin compiler runs with
+    `jvmDefault = NO_COMPATIBILITY`, which compiles no bridge to them into the toolsets.
+
+  **When `sinceBuild` reaches 263, undo all three**: call both platform methods directly (each helper carries
+  a TODO) and drop the `jvmDefault` setting.
 - Dependencies that aren't obvious: `bundledPlugin("com.intellij.mcpServer")`;
   `bundledModule("intellij.platform.vcs.impl")` (for `ChangeListManagerEx`, the patch builder, the
   line-status tracker, `ChangeListManagerImpl.editComment`); `bundledModule("intellij.platform.vcs.impl.shared")`
@@ -83,7 +96,7 @@ must stay empty.
   at all. Declared inside the file, the file is skipped in K2 mode behind a WARN — `… was not loaded` — and the
   override hop then reports itself unavailable with nothing to say why.
 
-## The MCP tool API (2026.2)
+## The MCP tool API (2026.2 and 2026.3)
 
 - A toolset class implements the marker `com.intellij.mcpserver.McpToolset`; each tool is a `suspend fun`
   annotated `@McpTool` + `@McpDescription`. Annotate **every parameter** too — those descriptions become the JSON schema.
