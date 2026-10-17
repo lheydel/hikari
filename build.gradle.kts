@@ -19,6 +19,10 @@ dependencies {
     intellijPlatform {
         intellijIdea("263.7031.23")               // 2026.3 EAP; unified IntelliJ IDEA distribution (IC/IU merged since 2025.3)
         bundledPlugin("com.intellij.mcpServer")   // bundled since 2025.2 — NOT the marketplace plugin
+        // GitWorkingTreesService, GitWorkingTree and the git command runner behind Merge and Remove.
+        bundledPlugin("Git4Idea")
+        // com.intellij.dvcs.repo.Repository, GitRepository's supertype, which supplies its root and update().
+        bundledModule("intellij.platform.vcs.dvcs")
         // ChangeListManagerEx, IdeaTextPatchBuilder and UnifiedDiffWriter live in the VCS impl module,
         // which is not on the compile classpath by default (only the vcs API interface module is).
         bundledModule("intellij.platform.vcs.impl")
@@ -54,6 +58,14 @@ intellijPlatform {
             VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
             VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
         )
+    }
+}
+
+intellijPlatformTesting {
+    runIde {
+        // A sandbox on the oldest supported line, where the code bridging 2026.2 and 2026.3 takes its 2026.2
+        // path. `runIde` runs the build target.
+        register("runIde262") { version = "2026.2.3" }
     }
 }
 

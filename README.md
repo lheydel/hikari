@@ -101,6 +101,28 @@ Each family registers as its own `McpToolset`; they appear alongside the IDE's b
 session, so its size is a recurring cost rather than a one-off; text carries the same information at
 roughly a third of the tokens. Each tool's description states the format its output uses.
 
+## Worktrees
+
+In the Git tool window's **Worktrees** tab, **Merge and Remove** (toolbar and context menu) finishes a
+worktree: select one linked worktree, from the window whose branch it should land on.
+
+1. The worktree must be clean; otherwise nothing happens and a notification says so.
+2. Your branch is merged into the worktree. On a conflict the merge is left in progress there, for
+   whoever works in that worktree to resolve and commit; the notification can bring its window forward.
+3. Your branch fast-forwards to the worktree's branch, so its commits keep their SHAs.
+4. A `.work` link in the worktree is removed as a link. A `.work` that is a real directory stops the
+   flow, since removing the worktree would delete it.
+5. The IDE closes the worktree's window, if open, and removes the worktree; then its branch is deleted
+   with `git branch -d`.
+
+Whatever step stops, run the action again once it is fixed: it starts over, and the steps already done
+do nothing the second time.
+
+On 2026.2, opening a linked worktree in the IDE copies into it the main worktree's untracked, gitignored
+files that `.worktreeinclude` lists — the files `claude -w` copies — so a worktree the IDE created has
+them too. Only missing files are copied, on every open, so an entry added later still arrives. 2026.3
+does this itself when it creates a worktree, and the plugin then leaves it alone.
+
 ## Intended workflow
 
 1. The agent finishes implementing.
@@ -206,6 +228,7 @@ The build targets a specific toolchain (each pinned for a concrete reason):
   an optional config file, so the plugin loads regardless of whether they're present — and because the
   plugin verifier reads only the root descriptor, the Java dependency declared in that optional file is
   listed in `verifier-ignored-problems.txt`.
+- Depends on the bundled `Git4Idea` plugin and the `intellij.platform.vcs.dvcs` module, for Merge and Remove.
 - `kotlinx-serialization-json` is `compileOnly` — the platform ships its own copy; bundling ours would clash.
 
 Source layout:
@@ -226,6 +249,12 @@ src/main/kotlin/dev/kosmio/hikari/
     SuperDeclarationProvider.kt         # the per-language override hop's extension point
     kt/
       KotlinSuperDeclarationProvider.kt # its Kotlin implementation
+  worktree/
+    MergeAndRemoveWorktreeAction.kt     # the Worktrees tab action
+    WorktreeMergeService.kt             # the merge-and-remove steps
+    WorkingTreesCompat.kt               # git4idea worktree APIs that differ between 2026.2 and 2026.3
+    WorktreeIncludeActivity.kt          # the .worktreeinclude copy on opening a linked worktree, 2026.2 only
+    WorktreeGit.kt                      # running git through git4idea
 src/main/resources/META-INF/plugin.xml
 src/main/resources/META-INF/hikari-kotlin.xml         # loaded only when the Kotlin plugin is present
 ```

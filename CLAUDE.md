@@ -38,6 +38,9 @@ must stay empty.
   source root, `ReferencesSearch` over `projectScope` finds nothing and `call_tree` answers zero callers for a
   declaration that plainly has one. Add the path to `<sandbox>/config/options/trusted-paths.xml` first, or the
   IDE blocks on the trust dialog and never opens the MCP port.
+- **`./gradlew runIde262` is the same sandbox on 2026.2.3**, the oldest supported line, where the code bridging
+  2026.2 and 2026.3 takes its 2026.2 path; `runIde` runs the build target. Its directories sit beside
+  `runIde`'s, suffixed `_runIde262` (`config_runIde262`, `log_runIde262`, …).
 - **Exercise a tool end-to-end without installing: `./gradlew runIde --args="<project path>"`, and speak MCP to
   the sandbox.** Put
   `<application><component name="McpServerSettings"><option name="enableMcpServer" value="true"/></component></application>`
@@ -69,16 +72,26 @@ must stay empty.
   - `getInstanceImpl` / `getInstanceEx` sit on a Kotlin `Companion` on 2026.3, so
     `ChangelistToolset.changeListManagerImpl` casts `ChangeListManager.getInstance` instead;
   - `McpToolset` gained default methods on 2026.3, so the Kotlin compiler runs with
-    `jvmDefault = NO_COMPATIBILITY`, which compiles no bridge to them into the toolsets.
+    `jvmDefault = NO_COMPATIBILITY`, which compiles no bridge to them into the toolsets;
+  - `GitWorkingTreeTabActionsDataKeys` moved package on 2026.3, so `WorkingTreesCompat` creates its keys by
+    their names, which both versions share;
+  - `GitWorkingTreesService.deleteWorkingTree` returns `void` on 2026.2 and a `Job` on 2026.3, so
+    `WorkingTreesCompat.deleteWorkingTree` calls it through reflection;
+  - 2026.3 copies `.worktreeinclude` files itself when it creates a worktree, so `WorktreeIncludeActivity`
+    returns at once on a 263 build.
 
-  **When `sinceBuild` reaches 263, undo all three**: call both platform methods directly (each helper carries
-  a TODO) and drop the `jvmDefault` setting.
+  **When `sinceBuild` reaches 263, undo every item above**: call the platform directly (each helper carries a
+  TODO) and drop the `jvmDefault` setting. Before using another git4idea or VCS API, decompile it from both
+  distributions (§ Inspecting platform APIs) and compare the signatures: compiling against 2026.3 says
+  nothing about 2026.2, and `verifyPlugin` is what catches a difference.
 - Dependencies that aren't obvious: `bundledPlugin("com.intellij.mcpServer")`;
   `bundledModule("intellij.platform.vcs.impl")` (for `ChangeListManagerEx`, the patch builder, the
   line-status tracker, `ChangeListManagerImpl.editComment`); `bundledModule("intellij.platform.vcs.impl.shared")`
   (for `LocalRange`); `bundledPlugin("org.jetbrains.kotlin")` (for `toLightMethods`) and
   `bundledPlugin("com.intellij.java")` (for `PsiMethod.findSuperMethods`), used only by the Kotlin
-  override hop. `kotlinx-serialization-json` is `compileOnly` — the platform ships its own; bundling clashes.
+  override hop. `bundledPlugin("Git4Idea")` and `bundledModule("intellij.platform.vcs.dvcs")` (for
+  `com.intellij.dvcs.repo.Repository`, `GitRepository`'s supertype) for Merge and Remove.
+  `kotlinx-serialization-json` is `compileOnly` — the platform ships its own; bundling clashes.
 - **`verifyPlugin` reads the root descriptor only, never an optional `<depends config-file=…>` one.** So the
   Java dependency and the `supportsKotlinPluginMode` declaration that `hikari-kotlin.xml` carries are
   invisible to it, and it reports the plugin as using Java classes without declaring Java. Moving those to
@@ -302,7 +315,12 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 - `src/main/kotlin/dev/kosmio/hikari/analysis/Models.kt` — `@Serializable` result DTOs for the analysis tools.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/SuperDeclarationProvider.kt` — the override hop's extension point.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/kt/KotlinSuperDeclarationProvider.kt` — its Kotlin implementation.
-- `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`.
+- `src/main/kotlin/dev/kosmio/hikari/worktree/MergeAndRemoveWorktreeAction.kt` — the Worktrees tab action, and when it is enabled.
+- `src/main/kotlin/dev/kosmio/hikari/worktree/WorktreeMergeService.kt` — the merge-and-remove steps.
+- `src/main/kotlin/dev/kosmio/hikari/worktree/WorkingTreesCompat.kt` — the git4idea worktree APIs that differ between 2026.2 and 2026.3.
+- `src/main/kotlin/dev/kosmio/hikari/worktree/WorktreeIncludeActivity.kt` — the `.worktreeinclude` copy on opening a linked worktree, 2026.2 only.
+- `src/main/kotlin/dev/kosmio/hikari/worktree/WorktreeGit.kt` — running git through git4idea.
+- `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`, the worktree action, its notification group and the `.worktreeinclude` startup activity.
 - `src/main/resources/META-INF/hikari-kotlin.xml` — loaded only when the Kotlin plugin is present.
 
 ## Inspecting platform APIs
