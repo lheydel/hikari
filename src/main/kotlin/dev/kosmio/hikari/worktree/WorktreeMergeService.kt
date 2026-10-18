@@ -21,6 +21,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.nio.file.DirectoryNotEmptyException
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
@@ -72,6 +74,7 @@ internal class WorktreeMergeService(private val project: Project, private val sc
             ?: fastForwardTarget(request)
             ?: unlinkWorkDirectory(request)
             ?: removeTreeAndBranch(request)
+            ?: deleteLeftoverFolder(request)
 
     private fun ensureClean(request: MergeRequest): Stop? {
         val status = git(request.treePath, GitCommand.STATUS, "--porcelain")
@@ -153,6 +156,29 @@ internal class WorktreeMergeService(private val project: Project, private val sc
         return if (delete.success()) null else failed("git branch -d ${request.treeBranch}", delete)
     }
 
+    /**
+     * `deleteWorkingTree` closes the worktree's window and removes the worktree right after, while processes
+     * that window ran can still hold the folder as their working directory. Git then empties the folder, fails
+     * to delete it, and forgets the worktree regardless, so the empty folder is retried here until they exit.
+     * A folder that still holds files is left alone: git removed every file it could.
+     */
+    private suspend fun deleteLeftoverFolder(request: MergeRequest): Stop? {
+        repeat(LEFTOVER_ATTEMPTS) {
+            try {
+                Files.deleteIfExists(request.treePath)
+                return null
+            } catch (_: DirectoryNotEmptyException) {
+                return Stop("${request.treeName} is removed, but git left files in ${request.treePath}. Delete the folder by hand.")
+            } catch (_: FileSystemException) {
+                delay(REMOVAL_POLL_MS)
+            }
+        }
+        return Stop(
+            "${request.treeName} is removed, but another process still holds its folder ${request.treePath}. " +
+                "Delete the folder once that process exits.",
+        )
+    }
+
     private fun isListedWorktree(root: Path, treePath: Path): Boolean {
         val list = git(root, GitCommand.WORKTREE, "list", "--porcelain")
         return list.output.any {
@@ -204,5 +230,8 @@ internal class WorktreeMergeService(private val project: Project, private val sc
         /** Long enough for the user to answer the prompt `deleteWorkingTree` raises over a running terminal. */
         const val REMOVAL_TIMEOUT_MS = 120_000L
         const val REMOVAL_POLL_MS = 500L
+
+        /** At [REMOVAL_POLL_MS] apart, half a minute for the closed window's processes to exit. */
+        const val LEFTOVER_ATTEMPTS = 60
     }
 }
