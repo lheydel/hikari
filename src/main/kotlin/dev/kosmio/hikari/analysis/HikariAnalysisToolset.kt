@@ -14,7 +14,7 @@ import kotlinx.coroutines.currentCoroutineContext
  *
  * Read-only, like every tool this plugin contributes: nothing here edits file contents or VCS state.
  */
-class AnalysisToolset : McpToolset {
+class HikariAnalysisToolset : McpToolset {
 
     @McpTool
     @McpDescription(

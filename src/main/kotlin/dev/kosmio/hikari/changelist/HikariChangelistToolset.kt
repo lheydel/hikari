@@ -43,7 +43,7 @@ import java.util.concurrent.CountDownLatch
  * the git equivalent of marking a new file to be tracked — but the user still reviews and commits
  * manually. That boundary is absolute.
  */
-class ChangelistToolset : McpToolset {
+class HikariChangelistToolset : McpToolset {
 
     @McpTool
     @McpDescription(

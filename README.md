@@ -237,10 +237,10 @@ Source layout:
 src/main/kotlin/dev/kosmio/hikari/
   ProjectPaths.kt                       # project-relative path helpers, shared by every toolset this plugin contributes
   changelist/
-    ChangelistToolset.kt                # the McpToolset with all changelist tool methods
+    HikariChangelistToolset.kt          # the McpToolset with all changelist tool methods
     Models.kt                           # @Serializable result/DTO types
   analysis/
-    AnalysisToolset.kt                  # the McpToolset with call_tree and outline
+    HikariAnalysisToolset.kt            # the McpToolset with call_tree and outline
     CallTreeTraversal.kt                # the traversal engine behind call_tree
     OutlineBuilder.kt                   # the structure-view walk behind outline
     DeclarationSymbols.kt               # the symbol grammar the tools name declarations with

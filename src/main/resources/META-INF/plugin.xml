@@ -32,8 +32,8 @@
     </extensionPoints>
 
     <extensions defaultExtensionNs="com.intellij.mcpServer">
-        <mcpToolset implementation="dev.kosmio.hikari.changelist.ChangelistToolset"/>
-        <mcpToolset implementation="dev.kosmio.hikari.analysis.AnalysisToolset"/>
+        <mcpToolset implementation="dev.kosmio.hikari.changelist.HikariChangelistToolset"/>
+        <mcpToolset implementation="dev.kosmio.hikari.analysis.HikariAnalysisToolset"/>
     </extensions>
 
     <extensions defaultExtensionNs="com.intellij">

@@ -68,9 +68,9 @@ must stay empty.
 - **Built against 2026.3, loaded on 2026.2 too.** What 2026.3 changed in binary form, the code works around so
   one build serves both lines:
   - `ChangeListManagerImpl.executeOnUpdaterThread` takes a `Runnable` on 2026.2 and a `Function0` on 2026.3, so
-    `ChangelistToolset.executeOnUpdaterThread` calls it through reflection, out of `verifyPlugin`'s sight;
+    `HikariChangelistToolset.executeOnUpdaterThread` calls it through reflection, out of `verifyPlugin`'s sight;
   - `getInstanceImpl` / `getInstanceEx` sit on a Kotlin `Companion` on 2026.3, so
-    `ChangelistToolset.changeListManagerImpl` casts `ChangeListManager.getInstance` instead;
+    `HikariChangelistToolset.changeListManagerImpl` casts `ChangeListManager.getInstance` instead;
   - `McpToolset` gained default methods on 2026.3, so the Kotlin compiler runs with
     `jvmDefault = NO_COMPATIBILITY`, which compiles no bridge to them into the toolsets;
   - `GitWorkingTreeTabActionsDataKeys` moved package on 2026.3, so `WorkingTreesCompat` creates its keys by
@@ -131,6 +131,12 @@ must stay empty.
   visible to a caller. String returns sidestep this for results; it still binds any parameter type.
 - Project: `currentCoroutineContext().project` (import `com.intellij.mcpserver.project`).
 - Register each toolset with its own `<mcpToolset>` in `plugin.xml`.
+- **A toolset's class name is its category in the IDE's MCP settings, so it carries the `Hikari` prefix.** The
+  category's short name is the class's simple name (`ToolsetReflection_utilKt.toolConversions`), shown with
+  `Toolset` removed (`McpToolCategoryKt.getPresentableName`),
+  and the tool-filter UI groups by that short name (`McpToolFilterPanel`, `McpToolsDialog`). A class sharing a
+  simple name with a bundled toolset — `com.intellij.mcpserver.toolsets.general.AnalysisToolset` — collapses into
+  its category and hides one side's tools.
 - The framework auto-injects a `projectPath` parameter into every tool — that's the multi-project/instance
   routing mechanism; don't declare it yourself.
 
@@ -305,9 +311,9 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 ## Source layout
 
 - `src/main/kotlin/dev/kosmio/hikari/ProjectPaths.kt` — project-relative path helpers, shared by every toolset this plugin contributes.
-- `src/main/kotlin/dev/kosmio/hikari/changelist/ChangelistToolset.kt` — the changelist `McpToolset`, its tools, private helpers.
+- `src/main/kotlin/dev/kosmio/hikari/changelist/HikariChangelistToolset.kt` — the changelist `McpToolset`, its tools, private helpers.
 - `src/main/kotlin/dev/kosmio/hikari/changelist/Models.kt` — `@Serializable` result DTOs for the changelist tools.
-- `src/main/kotlin/dev/kosmio/hikari/analysis/AnalysisToolset.kt` — the analysis `McpToolset`.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/HikariAnalysisToolset.kt` — the analysis `McpToolset`.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/CallTreeTraversal.kt` — the traversal engine behind `call_tree`.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/OutlineBuilder.kt` — the structure-view walk behind `outline`.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/DeclarationSymbols.kt` — the symbol grammar `outline` emits and `call_tree` accepts; each must derive it from here or they stop composing.
