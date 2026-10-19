@@ -64,7 +64,7 @@ signatures and the lines they span — no bodies — so the read that follows is
 
 | Tool | Arguments | Purpose |
 |---|---|---|
-| `call_tree` | `file`, `symbol`, `depth?` | Reverse call tree from one declaration: what calls it, transitively, in a single call. At every node it follows both the references to the declaration and the declaration it **overrides**, so an implementation reaches the callers of the port it implements. Project sources only. `depth` defaults to 2 (max 5). Indentation means "calls the line above"; marks are `*` never expanded, `^` reached because the seed overrides it, `(test)` test source. |
+| `call_tree` | `file`, `symbol`, `depth?` | Reverse call tree from one declaration: what calls it, transitively, in a single call. At every node it follows both the references to the declaration and the declaration it **overrides**, so an implementation reaches the callers of the port it implements. The seed also reaches the declarations **overriding** it, so a port's callers include the code calling its implementations directly. A reference from a local variable is reported as the declaration holding it. Project sources only. `depth` defaults to 2 (max 5). Indentation means "calls the line above"; marks are `*` never expanded, `^` reached because the line above overrides it, `↓` an implementation of the seed, `(test)` test source. |
 | `outline` | `file` | Every declaration in one file as `START-END signature`, indented under whatever it is nested in — never any body text. Read it instead of a whole file, then read just the range you want. Seed `call_tree` with the leading identifier of a line's signature, or with the `[symbol]` in brackets where one is given (which means the bare name would not resolve). |
 
 Reading a `call_tree` result:
@@ -78,8 +78,8 @@ Reading a `call_tree` result:
   segment plus that extension, so `Foo.bar  D2.kt:9` is `D2/Foo.kt` line 9.
 - **Zero callers is not dead code.** `@Scheduled` tasks, `@EventListener` handlers, `@Bean` endpoints and
   route files have no callers by construction, and static search cannot tell them from genuinely unused
-  code. That reading only applies when **`superHop.available`** is true; when it is false, no override hop
-  is registered for that language and an empty result says nothing either way.
+  code. That reading only applies when line 2 says the override hop resolved; when it says `UNAVAILABLE`, no
+  override hop is registered for that language and an empty result says nothing either way.
 - **Test-source callers are reported apart from production ones**, and they expand like any other node —
   they are a real answer to "what depends on this", they just must not read as production impact.
   Classification keys on path and file name, not on the source root's kind, which misses test code that
@@ -204,8 +204,9 @@ JetBrains MCP tool:
 - **No streaming.** Large diffs are truncated at 200 KB with a marker, and an `outline` that would
   grow past 24 KB of declaration text ends with a `... N more not listed` line.
 - **Partial moves are best-effort** — see [Parallel sessions](#parallel-sessions).
-- **The override hop is contributed per language, and Kotlin is the language contributed.** Elsewhere
-  `call_tree` reports `superHop.available: false` and walks references only.
+- **The override hop and local-variable folding are contributed per language, and Kotlin is the language
+  contributed.** Elsewhere `call_tree` reports the override hop `UNAVAILABLE`, walks references and the
+  seed's implementations only, and reports a local variable as a caller of its own.
 - **`outline` needs the IDE to contribute a structure view for the file's language**, which it does for
   every language it parses; for one where it does not, the tool says so rather than returning an empty
   outline.
@@ -246,9 +247,9 @@ src/main/kotlin/dev/kosmio/hikari/
     DeclarationSymbols.kt               # the symbol grammar the tools name declarations with
     SourceFiles.kt                      # locating a file and reporting how fresh the IDE's copy of it is
     Models.kt                           # @Serializable result/DTO types
-    SuperDeclarationProvider.kt         # the per-language override hop's extension point
+    CallTreeLanguageSupport.kt          # the per-language override hop and local folding, an extension point
     kt/
-      KotlinSuperDeclarationProvider.kt # its Kotlin implementation
+      KotlinCallTreeLanguageSupport.kt  # its Kotlin implementation
   worktree/
     MergeAndRemoveWorktreeAction.kt     # the Worktrees tab action
     WorktreeMergeService.kt             # the merge-and-remove steps

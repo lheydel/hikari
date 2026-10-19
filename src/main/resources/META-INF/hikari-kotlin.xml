@@ -5,6 +5,6 @@
     <depends>com.intellij.modules.java</depends>
 
     <extensions defaultExtensionNs="dev.kosmio.hikari">
-        <superDeclarationProvider implementation="dev.kosmio.hikari.analysis.kt.KotlinSuperDeclarationProvider"/>
+        <callTreeLanguageSupport implementation="dev.kosmio.hikari.analysis.kt.KotlinCallTreeLanguageSupport"/>
     </extensions>
 </idea-plugin>

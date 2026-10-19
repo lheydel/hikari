@@ -9,11 +9,12 @@
     <depends>com.intellij.mcpServer</depends>
     <depends>Git4Idea</depends>
 
-    <!-- The Kotlin override hop. Optional so an IDE without the Kotlin plugin still loads this plugin
-         and every tool in it; call_tree reports the hop unavailable for Kotlin rather than failing. -->
+    <!-- The Kotlin override hop and local folding. Optional so an IDE without the Kotlin plugin still loads
+         this plugin and every tool in it; call_tree reports the hop unavailable for Kotlin rather than
+         failing. -->
     <depends optional="true" config-file="hikari-kotlin.xml">org.jetbrains.kotlin</depends>
 
-    <!-- Declared HERE, not in the config file above, and this is not a style choice: the loader reads
+    <!-- Declared HERE, not in the config file above: the loader reads
          org.jetbrains.kotlin.supportsKotlinPluginMode off the ROOT descriptor to decide whether to load
          that config file at all (KotlinK2ModeCompatibilityCheckerKt.getSupportKotlinPluginModeEPs). Put
          it inside the file it gates and the file is silently skipped in K2 mode — the override hop then
@@ -24,10 +25,11 @@
     </extensions>
 
     <extensionPoints>
-        <!-- "What does this declaration override" has no language-neutral platform API, so it is the
-             surface of the traversal contributed per language, from an optional config file. -->
-        <extensionPoint name="superDeclarationProvider"
-                        interface="dev.kosmio.hikari.analysis.SuperDeclarationProvider"
+        <!-- "What does this declaration override" and "is this declaration local" have no language-neutral
+             platform API, so they are the surface of the traversal contributed per language, from an
+             optional config file. -->
+        <extensionPoint name="callTreeLanguageSupport"
+                        interface="dev.kosmio.hikari.analysis.CallTreeLanguageSupport"
                         dynamic="true"/>
     </extensionPoints>
 

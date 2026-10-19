@@ -20,13 +20,14 @@ class HikariAnalysisToolset : McpToolset {
     @McpDescription(
         "Reverse call tree: from one declaration, walk transitively to what calls it, in a single call. At each " +
         "node it follows references to the declaration AND what it OVERRIDES, so an implementation reaches its " +
-        "port's callers — the hop a text search cannot make. Project sources only. OUTPUT (text): line 1 = seed, " +
+        "port's callers — the hop a text search cannot make. The seed also reaches what OVERRIDES it, so a port's " +
+        "contract covers code calling its implementations directly. Project sources only. OUTPUT (text): line 1 = seed, " +
         "caller count, depth, status (complete|stopped_at_depth|stopped_unresolved); line 2 = whether the override " +
         "hop resolved; then a `dirs:` table numbering directories D<n>; then the tree, where indent means 'calls " +
         "the line above'. A node ends with D<n>/<file>:<line>, or D<n>.<ext>:<line> meaning the file is the " +
         "declaration's outermost segment plus that extension (`Foo.bar  D2.kt:9` = D2/Foo.kt line 9). Marks: * " +
         "never expanded (a stopped run — re-run deeper; never read it as a total answer), ^ reached via the " +
-        "override hop, (test) test source. Zero callers is NOT dead code: framework entry points (@Scheduled, " +
+        "override hop, ↓ an implementation of the seed, (test) test source. Zero callers is NOT dead code: framework entry points (@Scheduled, " +
         "@EventListener, @Bean, route files) have none by construction — and that reading only holds if line 2 says " +
         "the hop resolved. Edited files with your own tools? Call refresh_changelists FIRST; a STALE line means the " +
         "IDE has not re-scanned."

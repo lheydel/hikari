@@ -13,6 +13,7 @@ import com.intellij.psi.PsiManager
 import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.SmartPsiElementPointer
 import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.search.searches.DefinitionsScopedSearch
 import com.intellij.psi.search.searches.ReferencesSearch
 import dev.kosmio.hikari.ProjectPaths
 import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.declarationsOf
@@ -23,8 +24,14 @@ import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.qualifiedName
 
 /**
  * The reverse call tree: from a seed declaration, breadth-first to what references it, following at each
- * node the references to it and the declarations it overrides (via [SuperDeclarationProvider], the
+ * node the references to it and the declarations it overrides (via [CallTreeLanguageSupport], the
  * hop that reaches an implementation's callers through its port).
+ *
+ * The seed alone also hops downward, to the declarations that override it, so a change to a port's
+ * contract reaches the code calling its implementations directly. Past the seed that hop would be
+ * unsound: a caller of an override does not run the declaration it overrides, except through a `super`
+ * call, which is a reference and is found as one. Taken after an upward hop it would also reach
+ * siblings — from an implementation to its port to every other implementation of that port.
  *
  * One node's expansion is one [smartReadAction]. That granularity is the whole reason the traversal is
  * not a single read action: the platform cancels and *restarts* a smart read action when a write arrives,
@@ -48,17 +55,20 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         val line: Int,
         val module: String,
         val isTest: Boolean,
-        val overrides: Boolean,
+        val hop: Hop,
     ) {
         val callers = mutableListOf<WorkNode>()
     }
+
+    /** How a node was reached from the one above it. */
+    private enum class Hop { REFERENCE, OVERRIDDEN, IMPLEMENTATION }
 
     /** The seed, resolved, with the facts about it the result reports alongside the tree. */
     private class Seed(val node: WorkNode, val language: String, val providers: List<String>)
 
     private val symbols = DeclarationSymbols()
 
-    private val providersByLanguage = HashMap<Language, List<SuperDeclarationProvider>>()
+    private val providersByLanguage = HashMap<Language, List<CallTreeLanguageSupport>>()
 
     suspend fun run(seedRef: NodeRef, maxDepth: Int): String {
         val vFile = SourceFiles.find(basePath, seedRef.file)
@@ -73,7 +83,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         while (frontier.isNotEmpty() && level < maxDepth) {
             val next = mutableListOf<WorkNode>()
             for (node in frontier) {
-                val found = smartReadAction(project) { expand(node) }
+                val found = smartReadAction(project) { expand(node, implementations = level == 0) }
                 if (found == null) {
                     // The element was invalidated and its coordinates no longer resolve: report it
                     // unexpanded rather than letting it read as a node with no callers.
@@ -133,22 +143,30 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
     }
 
     /**
-     * One node's hop: the declarations it overrides, then everything that references it, each mapped to
-     * its nearest enclosing declaration. Returns null when the node's element is gone and its coordinates
-     * no longer resolve — a caller must not read that as "no callers".
+     * One node's hop: the declarations it overrides, then — when [implementations] is set — the ones
+     * overriding it, then everything that references it, each mapped to its nearest enclosing
+     * declaration. Returns null when the node's element is gone and its coordinates no longer resolve — a
+     * caller must not read that as "no callers".
      */
-    private fun expand(node: WorkNode): List<WorkNode>? {
+    private fun expand(node: WorkNode, implementations: Boolean): List<WorkNode>? {
         val element = node.pointer.element ?: resolveRef(node.ref) ?: return null
-        val found = LinkedHashMap<String, Pair<PsiElement, Boolean>>()
+        val scope = GlobalSearchScope.projectScope(project)
+        val found = LinkedHashMap<String, Pair<PsiElement, Hop>>()
         for (provider in providersFor(element.language)) {
             for (superDeclaration in provider.superDeclarations(element)) {
                 val target = superDeclaration.navigationElement ?: superDeclaration
-                keyOf(target)?.let { found.putIfAbsent(it, target to true) }
+                keyOf(target)?.let { found.putIfAbsent(it, target to Hop.OVERRIDDEN) }
             }
         }
-        ReferencesSearch.search(element, GlobalSearchScope.projectScope(project)).findAll().forEach { reference ->
+        if (implementations) {
+            DefinitionsScopedSearch.search(element, scope).findAll().forEach { implementation ->
+                val target = implementation.navigationElement ?: implementation
+                keyOf(target)?.let { found.putIfAbsent(it, target to Hop.IMPLEMENTATION) }
+            }
+        }
+        ReferencesSearch.search(element, scope).findAll().forEach { reference ->
             enclosingDeclaration(reference.element)?.let { declaration ->
-                keyOf(declaration)?.let { found.putIfAbsent(it, declaration to false) }
+                keyOf(declaration)?.let { found.putIfAbsent(it, declaration to Hop.REFERENCE) }
             }
         }
         return found.mapNotNull { (key, hit) -> workNode(key, hit.first, hit.second) }
@@ -157,12 +175,14 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
     /**
      * The declaration a reference belongs to: its nearest enclosing one under
      * [DeclarationSymbols.isDeclaration], the same predicate the symbol grammar is built on, so every
-     * node this traversal reports can also be named.
+     * node this traversal reports can also be named. A declaration its language reports local is passed
+     * over for the one enclosing it: its references cannot leave that declaration, so as a node of its own
+     * it would only spend a level of depth before reaching it.
      */
     private fun enclosingDeclaration(from: PsiElement): PsiElement? {
         var current: PsiElement? = from.parent
         while (current != null && current !is PsiFile) {
-            if (isDeclaration(current)) return current
+            if (isDeclaration(current) && providersFor(current.language).none { it.isLocal(current) }) return current
             current = current.parent
         }
         return null
@@ -175,7 +195,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         return vFile.path + "#" + element.textOffset
     }
 
-    private fun workNode(key: String, element: PsiElement, overrides: Boolean): WorkNode? {
+    private fun workNode(key: String, element: PsiElement, hop: Hop): WorkNode? {
         val psiFile = element.containingFile ?: return null
         val vFile = psiFile.virtualFile ?: return null
         val relativePath = ProjectPaths.relativize(basePath, vFile.path)
@@ -188,7 +208,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
             line = lineOf(psiFile, element),
             module = ModuleUtilCore.findModuleForFile(vFile, project)?.name ?: NO_MODULE,
             isTest = isTestSource(relativePath, vFile.name),
-            overrides = overrides,
+            hop = hop,
         )
     }
 
@@ -213,7 +233,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         }
         val key = keyOf(element)
             ?: mcpFail("'${seedRef.symbol}' resolves outside the project's own sources; call_tree searches project sources only.")
-        val node = workNode(key, element, overrides = false)
+        val node = workNode(key, element, Hop.REFERENCE)
             ?: mcpFail("'${seedRef.symbol}' could not be resolved to a declaration in ${seedRef.file}.")
         val language = psiFile.language
         return Seed(node, language.id, providersFor(language).map { it.id })
@@ -228,9 +248,9 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         return if (ordinal != null) matches.getOrNull(ordinal - 1) else matches.singleOrNull()
     }
 
-    private fun providersFor(language: Language): List<SuperDeclarationProvider> =
+    private fun providersFor(language: Language): List<CallTreeLanguageSupport> =
         providersByLanguage.getOrPut(language) {
-            SuperDeclarationProvider.EP_NAME.extensionList.filter { it.supports(language) }
+            CallTreeLanguageSupport.EP_NAME.extensionList.filter { it.supports(language) }
         }
 
     private fun lineOf(psiFile: PsiFile, element: PsiElement): Int {
@@ -266,7 +286,11 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         val body = mutableListOf<String>()
         fun walk(node: WorkNode, depth: Int) {
             val marks = buildString {
-                if (node.overrides) append(OVERRIDE_MARK)
+                when (node.hop) {
+                    Hop.OVERRIDDEN -> append(OVERRIDE_MARK)
+                    Hop.IMPLEMENTATION -> append(IMPLEMENTATION_MARK)
+                    Hop.REFERENCE -> {}
+                }
                 if (node.key in unexpanded) append(UNEXPANDED_MARK)
                 if (node.isTest) append(TEST_MARK)
             }
@@ -311,6 +335,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         private const val SEED_ARROW = "callers of"
 
         private const val OVERRIDE_MARK = "^"
+        private const val IMPLEMENTATION_MARK = "↓"
         private const val UNEXPANDED_MARK = "*"
         private const val TEST_MARK = " (test)"
 

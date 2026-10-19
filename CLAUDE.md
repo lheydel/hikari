@@ -98,7 +98,7 @@ must stay empty.
   `plugin.xml` would make the whole plugin, changelist tools included, refuse to load in an IDE without Java,
   so the problem is listed in `verifier-ignored-problems.txt` (wired via `pluginVerification.ignoredProblemsFile`).
   That file reaches problems only — the matching *warning* stands on every run and does not fail the build.
-- **The verifier restricts the plugin's id and its display name by two different word lists.** The id must
+- **The verifier restricts the plugin's id and its display name by different word lists.** The id must
   not contain a product name such as "intellij" or "rider" (`PluginIdVerifierKt`). The `<name>` must not
   contain "plugin", "JetBrains", "IDEA" or a product name, matched as a case-insensitive substring
   (`PluginBeanValidatorKt.PLUGIN_NAME_RESTRICTED_WORDS`), so even a name that merely spells "idea" inside
@@ -286,9 +286,15 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
   `<anonymous>`, so a null check alone lets every Kotlin lambda through. They are dead ends — nothing
   references a lambda — and they dominate the result where a codebase nests calls in lambdas: the
   `TransactionSpi.execute` seed at depth 2 carries 136 nodes with lambdas admitted and 117 without, and its
-  test side drops from 26 nodes, mostly step-definition lambdas, to 12 real declarations. The `KtProperty` nodes, which
-  are real call sites, survive either way. Skip the placeholder segments when building a qualified name too,
-  so a property declared inside a lambda reads `UserDeleteFeatureImpl.invoke.deleted`.
+  test side drops from 26 nodes, mostly step-definition lambdas, to 12 real declarations. Skip the placeholder
+  segments when building a qualified name too, so a property declared inside a lambda reads
+  `UserDeleteFeatureImpl.invoke.deleted`.
+- **A local property is a name the grammar keeps and a caller the traversal folds.** `outline` and a seed
+  can still name `UserDeleteFeatureImpl.invoke.deleted`, but a reference inside its initializer is reported
+  from `UserDeleteFeatureImpl.invoke`: as a node of its own it only spends a level reaching that function,
+  and at the depth limit it stops the tree short of the function's callers. Kotlin's Call Hierarchy draws
+  the same line (`isCallHierarchyElement`: a local `KtProperty` folds, a local named function stays), and
+  locality has no language-neutral API, so `CallTreeLanguageSupport.isLocal` decides it per language.
 - **A structure-view model builds with no editor and no open file:**
   `LanguageStructureViewBuilder.getInstance().getStructureViewBuilder(psiFile)` answers a
   `TreeBasedStructureViewBuilder` whose `createStructureViewModel(null)` works from a background read
@@ -319,8 +325,8 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 - `src/main/kotlin/dev/kosmio/hikari/analysis/DeclarationSymbols.kt` — the symbol grammar `outline` emits and `call_tree` accepts; each must derive it from here or they stop composing.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/SourceFiles.kt` — resolving a requested path and reporting how fresh the IDE's copy of it is.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/Models.kt` — `@Serializable` result DTOs for the analysis tools.
-- `src/main/kotlin/dev/kosmio/hikari/analysis/SuperDeclarationProvider.kt` — the override hop's extension point.
-- `src/main/kotlin/dev/kosmio/hikari/analysis/kt/KotlinSuperDeclarationProvider.kt` — its Kotlin implementation.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/CallTreeLanguageSupport.kt` — the override hop and local folding, the traversal's per-language extension point.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/kt/KotlinCallTreeLanguageSupport.kt` — its Kotlin implementation.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/MergeAndRemoveWorktreeAction.kt` — the Worktrees tab action, and when it is enabled.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/WorktreeMergeService.kt` — the merge-and-remove steps.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/WorkingTreesCompat.kt` — the git4idea worktree APIs that differ between 2026.2 and 2026.3.
