@@ -1,0 +1,19 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="hikari.claudetab" displayType="BALLOON"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="org.jetbrains.plugins.terminal">
+        <localTerminalCustomizer implementation="dev.kosmio.hikari.claudetab.ClaudeTabCustomizer"/>
+    </extensions>
+
+    <actions>
+        <action id="Hikari.Terminal.NewClaudeTab"
+                class="dev.kosmio.hikari.claudetab.NewClaudeTabAction"
+                text="Claude Code"
+                description="Open a Claude Code tab that resumes its conversation when the project reopens"
+                icon="org.jetbrains.plugins.terminal.TerminalIcons.Agents.ClaudeCode">
+            <add-to-group group-id="TerminalToolwindowActionGroup" anchor="after" relative-to-action="TerminalNewPredefinedSession"/>
+        </action>
+    </actions>
+</idea-plugin>

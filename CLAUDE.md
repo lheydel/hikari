@@ -15,9 +15,11 @@ that edits file contents, through one of them. The *one* mutation such a surface
 IntelliJ.
 
 Actions the user triggers in the IDE UI, and the setup the plugin runs when the user opens a linked
-worktree, may change files and VCS state. **Code that does lives only in `dev.kosmio.hikari.worktree`, and
-no toolset imports it** — that separation is what keeps a mutating helper out of reach of every MCP tool.
-`grep -rn 'hikari.worktree' src/main/kotlin/dev/kosmio/hikari/changelist src/main/kotlin/dev/kosmio/hikari/analysis`
+worktree, may change files and VCS state; a Claude tab's process start writes and deletes its session
+record under the IDE's system directory. **Code that does lives only in `dev.kosmio.hikari.worktree` and
+`dev.kosmio.hikari.claudetab`, and no toolset imports either** — that separation is what keeps a mutating
+helper out of reach of every MCP tool.
+`grep -rnE 'hikari\.(worktree|claudetab)' src/main/kotlin/dev/kosmio/hikari/changelist src/main/kotlin/dev/kosmio/hikari/analysis`
 must stay empty.
 
 ## Build & test
@@ -38,6 +40,11 @@ must stay empty.
   source root, `ReferencesSearch` over `projectScope` finds nothing and `call_tree` answers zero callers for a
   declaration that plainly has one. Add the path to `<sandbox>/config/options/trusted-paths.xml` first, or the
   IDE blocks on the trust dialog and never opens the MCP port.
+- **Launch a sandbox that runs Claude Code tabs with the `CLAUDE_CODE_*` variables removed** —
+  `/usr/bin/env -u CLAUDE_CODE_CHILD_SESSION -u … ./gradlew runIde262`, each name spelled out, since zsh does not
+  word-split a `$VAR` holding them. Launched from inside a Claude Code session, the sandbox hands
+  `CLAUDE_CODE_CHILD_SESSION` to every `claude` it starts, which then saves no transcript: a hikari tab records
+  its session and still never resumes, because the transcript it would resume does not exist.
 - **`./gradlew runIde262` is the same sandbox on 2026.2.3**, the oldest supported line, where the code bridging
   2026.2 and 2026.3 takes its 2026.2 path; `runIde` runs the build target. Its directories sit beside
   `runIde`'s, suffixed `_runIde262` (`config_runIde262`, `log_runIde262`, …).
@@ -332,8 +339,13 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 - `src/main/kotlin/dev/kosmio/hikari/worktree/WorkingTreesCompat.kt` — the git4idea worktree APIs that differ between 2026.2 and 2026.3.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/WorktreeIncludeActivity.kt` — the `.worktreeinclude` copy on opening a linked worktree, 2026.2 only.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/WorktreeGit.kt` — running git through git4idea.
+- `src/main/kotlin/dev/kosmio/hikari/claudetab/NewClaudeTabAction.kt` — the terminal tab strip's Claude Code button.
+- `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabLauncher.kt` — opening a Claude tab as the IDE's agent launcher does, plus the tab's identity.
+- `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabCustomizer.kt` — the recording hook and `--resume` added when a hikari tab's `claude` starts.
+- `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabSessions.kt` — the per-tab session records: their location, the hook input they hold, and whether one can resume.
 - `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`, the worktree action, its notification group and the `.worktreeinclude` startup activity.
 - `src/main/resources/META-INF/hikari-kotlin.xml` — loaded only when the Kotlin plugin is present.
+- `src/main/resources/META-INF/hikari-terminal.xml` — loaded only when the terminal plugin is present: the Claude tab action, its notification group and the terminal customizer.
 
 ## Inspecting platform APIs
 

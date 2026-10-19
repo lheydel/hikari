@@ -2,7 +2,7 @@
     <id>dev.kosmio.hikari</id>
     <name>hikari</name>
     <vendor>kosmio</vendor>
-    <description><![CDATA[Adds tools to the IDE's built-in MCP server. Exposes IntelliJ local changelists: read state, draft commit messages from a changelist diff, and organize modified files into changelists. Adds code intelligence the MCP server does not otherwise offer: a reverse call tree that walks from a declaration to what transitively calls it, following what it overrides so an implementation reaches its port's callers, and a file outline that lists a file's declarations with their signatures and line ranges so only the relevant part need be read. In the Git tool window's Worktrees tab, adds Merge and Remove: merges a finished worktree into the current branch, then removes the worktree and its branch. On 2026.2, a linked worktree opened in the IDE receives the gitignored files its .worktreeinclude lists, as claude -w does. Every surface a program can reach, the MCP tools included, reads and organizes only: none mutates file contents or VCS state, scheduling unversioned files for addition being the single exception.]]></description>
+    <description><![CDATA[Adds tools to the IDE's built-in MCP server. Exposes IntelliJ local changelists: read state, draft commit messages from a changelist diff, and organize modified files into changelists. Adds code intelligence the MCP server does not otherwise offer: a reverse call tree that walks from a declaration to what transitively calls it, following what it overrides so an implementation reaches its port's callers, and a file outline that lists a file's declarations with their signatures and line ranges so only the relevant part need be read. In the Git tool window's Worktrees tab, adds Merge and Remove: merges a finished worktree into the current branch, then removes the worktree and its branch. On 2026.2, a linked worktree opened in the IDE receives the gitignored files its .worktreeinclude lists, as claude -w does. In the terminal tool window, adds a Claude Code button whose tabs resume their Claude Code session when the project reopens. Every surface a program can reach, the MCP tools included, reads and organizes only: none mutates file contents or VCS state, scheduling unversioned files for addition being the single exception.]]></description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
@@ -13,6 +13,10 @@
          this plugin and every tool in it; call_tree reports the hop unavailable for Kotlin rather than
          failing. -->
     <depends optional="true" config-file="hikari-kotlin.xml">org.jetbrains.kotlin</depends>
+
+    <!-- The Claude Code tab button and the customizer that resumes its session. Optional so an IDE without
+         the terminal plugin still loads every tool. -->
+    <depends optional="true" config-file="hikari-terminal.xml">org.jetbrains.plugins.terminal</depends>
 
     <!-- Declared HERE, not in the config file above: the loader reads
          org.jetbrains.kotlin.supportsKotlinPluginMode off the ROOT descriptor to decide whether to load

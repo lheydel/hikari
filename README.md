@@ -15,7 +15,8 @@ need.
 > marking a new file to be tracked — is the single exception, and you still review and commit manually.
 > That boundary is absolute, and it does not widen with the tool surface. Only an action you trigger
 > yourself in the IDE, or the setup that runs when you open a linked worktree, may change files or VCS
-> state.
+> state; and a Claude Code tab opened from the plugin's button records which session it runs in a file
+> under the IDE's system directory, outside every project.
 
 ## Why
 
@@ -122,6 +123,26 @@ On 2026.2, opening a linked worktree in the IDE copies into it the main worktree
 files that `.worktreeinclude` lists — the files `claude -w` copies — so a worktree the IDE created has
 them too. Only missing files are copied, on every open, so an entry added later still arrives. 2026.3
 does this itself when it creates a worktree, and the plugin then leaves it alone.
+
+## Resumable Claude Code tabs
+
+The terminal tool window's tab strip gets a **Claude Code** button (✳, beside the new-tab dropdown). The
+tab it opens runs Claude Code exactly as the IDE's own AI-agent selector does, and remembers which
+session runs in it: when the project reopens and you select the tab, that conversation resumes in place
+(`claude --resume <id>`). Each tab keeps its own session, so several Claude tabs per project come back
+as they were, `/clear` and compaction included. A restored tab starts its session only when first shown, as
+the IDE does for every restored tab.
+
+- Tabs opened from the IDE's own agent launcher stay as they are: they reopen as a new session. On
+  2026.2, whose terminal toolbar carries that launcher, switch it off to keep one button (Terminal ⋮
+  menu → **Show AI agents in toolbar**). Bind a shortcut to hikari's **Claude Code** action in the
+  keymap if you want one.
+- A session Claude Code no longer has on disk is never resumed; the tab starts a new one instead.
+- `/exit` closes the tab, so a conversation ended on purpose does not come back.
+- macOS and Linux, local projects only. Without hikari, a saved tab reopens as an ordinary new session.
+
+The tab records its session through a `SessionStart` hook passed with `--settings`, which runs alongside
+your own hooks and overrides none of your settings.
 
 ## Intended workflow
 
@@ -256,6 +277,12 @@ src/main/kotlin/dev/kosmio/hikari/
     WorkingTreesCompat.kt               # git4idea worktree APIs that differ between 2026.2 and 2026.3
     WorktreeIncludeActivity.kt          # the .worktreeinclude copy on opening a linked worktree, 2026.2 only
     WorktreeGit.kt                      # running git through git4idea
+  claudetab/
+    NewClaudeTabAction.kt               # the terminal tab strip's Claude Code button
+    ClaudeTabLauncher.kt                # opening a tab the way the IDE's agent launcher does, plus its identity
+    ClaudeTabCustomizer.kt              # the hook and --resume added when a hikari tab's claude starts
+    ClaudeTabSessions.kt                # where a tab's session is recorded, and whether it can resume
 src/main/resources/META-INF/plugin.xml
 src/main/resources/META-INF/hikari-kotlin.xml         # loaded only when the Kotlin plugin is present
+src/main/resources/META-INF/hikari-terminal.xml       # loaded only when the terminal plugin is present
 ```

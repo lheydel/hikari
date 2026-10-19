@@ -33,6 +33,8 @@ dependencies {
         bundledPlugin("org.jetbrains.kotlin")
         // PsiMethod.findSuperMethods, which that hop calls on the light methods it gets back.
         bundledPlugin("com.intellij.java")
+        // The Claude Code tab button and its session-resuming customizer, contributed from an OPTIONAL config file.
+        bundledPlugin("org.jetbrains.plugins.terminal")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
     // compileOnly to avoid the kotlinx-serialization classloader clash with the platform's copy:
