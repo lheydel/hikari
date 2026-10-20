@@ -28,8 +28,12 @@ internal object ClaudeTabSessions {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun directory(project: Project): Path =
-        PathManager.getSystemDir().resolve("hikari").resolve("claude-tabs").resolve(project.locationHash)
+    private val root: Path get() = PathManager.getSystemDir().resolve("hikari").resolve("claude-tabs")
+
+    fun directory(project: Project): Path = root.resolve(project.locationHash)
+
+    /** The `--settings` file every hikari tab's `claude` is started with; shared by every project. */
+    val settingsFile: Path get() = root.resolve("settings.json")
 
     /** The mapping file of the tab whose identity is [tabId], or null when [tabId] is not a UUID. */
     fun file(project: Project, tabId: String): Path? {

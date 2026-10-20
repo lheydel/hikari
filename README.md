@@ -15,9 +15,9 @@ need.
 > marking a new file to be tracked — is the single exception, and you still review and commit manually.
 > That boundary is absolute, and it does not widen with the tool surface. Only an action you trigger
 > yourself in the IDE, or the setup that runs when you open a linked worktree, may change files or VCS
-> state; a Claude Code tab opened from the plugin's button records which session it runs in a file
-> under the IDE's system directory, outside every project; and the mcproxy page's button writes
-> mcproxy's config in your home directory.
+> state; a Claude Code tab opened from the plugin's button records which session it runs, and writes the
+> settings file that adds its recording hook, under the IDE's system directory, outside every project;
+> and the mcproxy page's button writes mcproxy's config in your home directory.
 
 ## Why
 
@@ -142,10 +142,11 @@ the IDE does for every restored tab.
 - `/exit` closes the tab, so a conversation ended on purpose does not come back.
 - A tab's record is deleted when the project closes after the tab is gone, however it went. A project
   closed without its terminal tool window ever showing keeps every record until a later close.
-- macOS and Linux, local projects only. Without hikari, a saved tab reopens as an ordinary new session.
+- Local projects only, on macOS, Linux and Windows. Without hikari, a saved tab reopens as an ordinary new session.
 
 The tab records its session through a `SessionStart` hook passed with `--settings`, which runs alongside
-your own hooks and overrides none of your settings.
+your own hooks and overrides none of your settings: the settings file holds that hook alone. The hook is a
+POSIX `sh` command, which Claude Code runs through Git Bash on Windows.
 
 ## mcproxy
 
@@ -301,9 +302,9 @@ src/main/kotlin/dev/kosmio/hikari/
   claudetab/
     NewClaudeTabAction.kt               # the terminal tab strip's Claude Code button
     ClaudeTabLauncher.kt                # opening a tab the way the IDE's agent launcher does, plus its identity
-    ClaudeTabCustomizer.kt              # the hook and --resume added when a hikari tab's claude starts
+    ClaudeTabCustomizer.kt              # the hook, its --settings file, and --resume added when a hikari tab's claude starts
     ClaudeTabSweeper.kt                 # deleting the records of gone tabs when the project closes
-    ClaudeTabSessions.kt                # where a tab's session is recorded, and whether it can resume
+    ClaudeTabSessions.kt                # where a tab's session and the hook's settings are written, and whether a session can resume
   mcproxy/
     McproxyConfigurable.kt              # the Tools › MCP Server › mcproxy settings page
     McproxyConfig.kt                    # listing an IDE's URL in mcproxy's config, as a pure text edit

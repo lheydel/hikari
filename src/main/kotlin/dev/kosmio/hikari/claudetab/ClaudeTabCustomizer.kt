@@ -15,6 +15,9 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.util.UUID
 
 /**
  * Rewrites the command of a hikari Claude tab as its process starts: points [ClaudeTabSessions.FILE_ENV]
@@ -23,8 +26,8 @@ import java.nio.file.Path
  * `claude` process as well as shells; anything without [ClaudeTabSessions.TAB_ENV], or not running
  * `claude`, passes through untouched.
  *
- * Local macOS and Linux only: the hook is a POSIX `sh` command, and the mapping files live on the IDE's
- * host.
+ * Local projects only: the mapping files live on the IDE's host. The hook is a POSIX `sh` command, which
+ * Claude Code runs through Git Bash on Windows.
  */
 class ClaudeTabCustomizer : LocalTerminalCustomizer() {
 
@@ -36,8 +39,14 @@ class ClaudeTabCustomizer : LocalTerminalCustomizer() {
         eelDescriptor: EelDescriptor,
     ): List<String> {
         val tabId = envs[ClaudeTabSessions.TAB_ENV] ?: return command
-        if (eelDescriptor != LocalEelDescriptor || SystemInfo.isWindows || !runsClaude(command)) return command
+        if (eelDescriptor != LocalEelDescriptor || !runsClaude(command)) return command
         val file = ClaudeTabSessions.file(project, tabId) ?: return command
+        val settings = try {
+            writeSettings()
+        } catch (e: IOException) {
+            thisLogger().warn("Cannot write the hook settings of terminal tab $tabId", e)
+            return command
+        }
         val session = try {
             Files.createDirectories(file.parent)
             ClaudeTabSessions.resumableSession(file)
@@ -47,18 +56,43 @@ class ClaudeTabCustomizer : LocalTerminalCustomizer() {
         }
         envs[ClaudeTabSessions.FILE_ENV] = file.toString()
         val resume = if (session != null) listOf("--resume", session) else emptyList()
-        return command + listOf("--settings", HOOK_SETTINGS) + resume
+        return command + listOf("--settings", settings.toString()) + resume
     }
 
     private fun runsClaude(command: List<String>): Boolean =
         try {
-            command.firstOrNull()?.let { Path.of(it).fileName?.toString() } == CLAUDE_BINARY
+            val name = command.firstOrNull()?.let { Path.of(it).fileName?.toString() }
+            if (SystemInfo.isWindows) WINDOWS_CLAUDE_BINARIES.any { it.equals(name, ignoreCase = true) }
+            else name == CLAUDE_BINARY
         } catch (_: InvalidPathException) {
             false
         }
 
+    /**
+     * [ClaudeTabSessions.settingsFile] holding [HOOK_SETTINGS], rewritten only when its text differs. The
+     * settings travel as a file because the Windows terminal joins arguments without escaping their quotes
+     * (pty4j `WinPtyProcess.joinCmdArgs`), which would split the JSON. The rewrite goes through a sibling
+     * file moved into place, so a `claude` starting in another tab never reads a partial file.
+     */
+    private fun writeSettings(): Path {
+        val target = ClaudeTabSessions.settingsFile
+        if (Files.isRegularFile(target) && Files.readString(target) == HOOK_SETTINGS) return target
+        val temp = Files.createDirectories(target.parent).resolve("${target.fileName}.${UUID.randomUUID()}.tmp")
+        try {
+            Files.writeString(temp, HOOK_SETTINGS, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: IOException) {
+            Files.deleteIfExists(temp)
+            throw e
+        }
+        return target
+    }
+
     private companion object {
         const val CLAUDE_BINARY = "claude"
+
+        /** The native installer's binary and npm's shim. */
+        val WINDOWS_CLAUDE_BINARIES = listOf("claude.exe", "claude.cmd")
 
         /**
          * Copies Claude Code's `SessionStart` hook input to the tab's mapping file. Silent and always
