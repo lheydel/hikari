@@ -7,6 +7,10 @@
         <localTerminalCustomizer implementation="dev.kosmio.hikari.claudetab.ClaudeTabCustomizer"/>
     </extensions>
 
+    <applicationListeners>
+        <listener class="dev.kosmio.hikari.claudetab.ClaudeTabSweeper" topic="com.intellij.openapi.project.ProjectCloseListener"/>
+    </applicationListeners>
+
     <actions>
         <action id="Hikari.Terminal.NewClaudeTab"
                 class="dev.kosmio.hikari.claudetab.NewClaudeTabAction"

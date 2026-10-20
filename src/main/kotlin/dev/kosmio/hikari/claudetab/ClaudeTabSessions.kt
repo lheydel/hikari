@@ -56,6 +56,18 @@ internal object ClaudeTabSessions {
         return null
     }
 
+    /**
+     * Deletes every record of [project] whose tab is not in [openTabIds], and every one whose session can no
+     * longer resume.
+     */
+    fun sweep(project: Project, openTabIds: Set<String>) {
+        val directory = directory(project)
+        if (Files.notExists(directory)) return
+        for (file in Files.list(directory).use { it.toList() }) {
+            if (file.fileName.toString() in openTabIds) resumableSession(file) else Files.deleteIfExists(file)
+        }
+    }
+
     private fun read(file: Path): HookInput? =
         try {
             json.decodeFromString<HookInput>(Files.readString(file))

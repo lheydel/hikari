@@ -55,7 +55,7 @@ intellijPlatform {
         // declares; this file lists only what follows from that blind spot.
         ignoredProblemsFile = file("verifier-ignored-problems.txt")
         // The default also fails on internal API usage, which the changelist tools cannot avoid:
-        // ChangeListManagerImpl, internal from 2026.3, is the only home of editComment.
+        // ChangeListManagerImpl, internal from 2026.3, is where editComment lives.
         failureLevel = listOf(
             VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
             VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,

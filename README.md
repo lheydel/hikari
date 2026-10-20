@@ -139,6 +139,8 @@ the IDE does for every restored tab.
   keymap if you want one.
 - A session Claude Code no longer has on disk is never resumed; the tab starts a new one instead.
 - `/exit` closes the tab, so a conversation ended on purpose does not come back.
+- A tab's record is deleted when the project closes after the tab is gone, however it went. A project
+  closed without its terminal tool window ever showing keeps every record until a later close.
 - macOS and Linux, local projects only. Without hikari, a saved tab reopens as an ordinary new session.
 
 The tab records its session through a `SessionStart` hook passed with `--settings`, which runs alongside
@@ -241,7 +243,7 @@ The build targets a specific toolchain (each pinned for a concrete reason):
   is as far ahead as a compiler reads.
 - **JVM 25**, the runtime 2026.2 and 2026.3 ship with (`kotlin { jvmToolchain(25) }`).
 - Platform dependency is `intellijIdea("263.7031.23")`, the 2026.3 EAP (the `IC`/`IU` artifacts merged since
-  2025.3); the plugin still loads from 2026.2 on, and `verifyPlugin` checks both.
+  2025.3); the plugin still loads from 2026.2 on, and `verifyPlugin` checks each.
 - Depends on the bundled `com.intellij.mcpServer` plugin and the bundled modules
   `intellij.platform.vcs.impl` (for `ChangeListManagerEx`, the patch builder, the line-status tracker) and
   `intellij.platform.vcs.impl.shared` (for `LocalRange`).
@@ -281,6 +283,7 @@ src/main/kotlin/dev/kosmio/hikari/
     NewClaudeTabAction.kt               # the terminal tab strip's Claude Code button
     ClaudeTabLauncher.kt                # opening a tab the way the IDE's agent launcher does, plus its identity
     ClaudeTabCustomizer.kt              # the hook and --resume added when a hikari tab's claude starts
+    ClaudeTabSweeper.kt                 # deleting the records of gone tabs when the project closes
     ClaudeTabSessions.kt                # where a tab's session is recorded, and whether it can resume
 src/main/resources/META-INF/plugin.xml
 src/main/resources/META-INF/hikari-kotlin.xml         # loaded only when the Kotlin plugin is present

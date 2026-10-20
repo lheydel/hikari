@@ -17,7 +17,7 @@ IntelliJ.
 Actions the user triggers in the IDE UI, and the setup the plugin runs when the user opens a linked
 worktree, may change files and VCS state; a Claude tab's process start writes and deletes its session
 record under the IDE's system directory. **Code that does lives only in `dev.kosmio.hikari.worktree` and
-`dev.kosmio.hikari.claudetab`, and no toolset imports either** — that separation is what keeps a mutating
+`dev.kosmio.hikari.claudetab`, and no toolset imports from them** — that separation is what keeps a mutating
 helper out of reach of every MCP tool.
 `grep -rnE 'hikari\.(worktree|claudetab)' src/main/kotlin/dev/kosmio/hikari/changelist src/main/kotlin/dev/kosmio/hikari/analysis`
 must stay empty.
@@ -45,6 +45,11 @@ must stay empty.
   word-split a `$VAR` holding them. Launched from inside a Claude Code session, the sandbox hands
   `CLAUDE_CODE_CHILD_SESSION` to every `claude` it starts, which then saves no transcript: a hikari tab records
   its session and still never resumes, because the transcript it would resume does not exist.
+- **A sandbox cannot run with hikari disabled**: `runIde` passes `-Didea.required.plugins.id=dev.kosmio.hikari`,
+  which outranks `disabled_plugins.txt`, and the unpacked app bundle in the Gradle cache is killed by macOS when
+  launched directly. To see what a user without hikari sees, rerun the sandbox's own `java` command line
+  (`ps -ww -o args=` of the running IDE) without that flag and `-Dplugin.path`, with `-Didea.plugins.path` on an
+  empty directory.
 - **`./gradlew runIde262` is the same sandbox on 2026.2.3**, the oldest supported line, where the code bridging
   2026.2 and 2026.3 takes its 2026.2 path; `runIde` runs the build target. Its directories sit beside
   `runIde`'s, suffixed `_runIde262` (`config_runIde262`, `log_runIde262`, …).
@@ -81,7 +86,7 @@ must stay empty.
   - `McpToolset` gained default methods on 2026.3, so the Kotlin compiler runs with
     `jvmDefault = NO_COMPATIBILITY`, which compiles no bridge to them into the toolsets;
   - `GitWorkingTreeTabActionsDataKeys` moved package on 2026.3, so `WorkingTreesCompat` creates its keys by
-    their names, which both versions share;
+    their names, which 2026.2 and 2026.3 share;
   - `GitWorkingTreesService.deleteWorkingTree` returns `void` on 2026.2 and a `Job` on 2026.3, so
     `WorkingTreesCompat.deleteWorkingTree` calls it through reflection;
   - 2026.3 copies `.worktreeinclude` files itself when it creates a worktree, so `WorktreeIncludeActivity`
@@ -342,10 +347,11 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 - `src/main/kotlin/dev/kosmio/hikari/claudetab/NewClaudeTabAction.kt` — the terminal tab strip's Claude Code button.
 - `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabLauncher.kt` — opening a Claude tab as the IDE's agent launcher does, plus the tab's identity.
 - `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabCustomizer.kt` — the recording hook and `--resume` added when a hikari tab's `claude` starts.
+- `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabSweeper.kt` — deleting, when a project closes, the session records of tabs that are gone.
 - `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabSessions.kt` — the per-tab session records: their location, the hook input they hold, and whether one can resume.
 - `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`, the worktree action, its notification group and the `.worktreeinclude` startup activity.
 - `src/main/resources/META-INF/hikari-kotlin.xml` — loaded only when the Kotlin plugin is present.
-- `src/main/resources/META-INF/hikari-terminal.xml` — loaded only when the terminal plugin is present: the Claude tab action, its notification group and the terminal customizer.
+- `src/main/resources/META-INF/hikari-terminal.xml` — loaded only when the terminal plugin is present: the Claude tab action, its notification group, the terminal customizer and the project-close sweep.
 
 ## Inspecting platform APIs
 
