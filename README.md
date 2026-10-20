@@ -15,8 +15,9 @@ need.
 > marking a new file to be tracked — is the single exception, and you still review and commit manually.
 > That boundary is absolute, and it does not widen with the tool surface. Only an action you trigger
 > yourself in the IDE, or the setup that runs when you open a linked worktree, may change files or VCS
-> state; and a Claude Code tab opened from the plugin's button records which session it runs in a file
-> under the IDE's system directory, outside every project.
+> state; a Claude Code tab opened from the plugin's button records which session it runs in a file
+> under the IDE's system directory, outside every project; and the mcproxy page's button writes
+> mcproxy's config in your home directory.
 
 ## Why
 
@@ -145,6 +146,24 @@ the IDE does for every restored tab.
 
 The tab records its session through a `SessionStart` hook passed with `--settings`, which runs alongside
 your own hooks and overrides none of your settings.
+
+## mcproxy
+
+mcproxy presents every running JetBrains IDE as one Claude Code entry, and finds them through
+the `upstreams` of its config, `~/.config/mcproxy/config.toml`. **Settings | Tools | MCP Server | mcproxy**
+shows this IDE's MCP URL and whether that config lists it; **Add to mcproxy** lists it, at once, with no
+Apply. Run it again whenever the IDE's port moves.
+
+- An IDE is the trailing comment on its `upstreams` line, `# <product name>` (`# IntelliJ IDEA`,
+  `# RustRover`). Every group with `adapter = "jetbrains"` ends up with exactly one line holding this
+  IDE's URL under its name: a line already holding the URL keeps its place, else the line carrying the
+  name takes the new URL in place, since the order of `upstreams` decides which IDE wins a shared tool or
+  project; else the line is appended. Further lines holding the URL or the name are removed.
+- With no config, or no jetbrains group, it creates `[groups.idea]`.
+- The file is edited as text: everything else in it stays byte for byte. It recognises `upstreams` written
+  one quoted URL per line, and refuses any other form, saying which group and showing the expected one.
+- `MCPROXY_CONFIG` is not read, since the IDE's environment is not the one Claude Code starts mcproxy in.
+- Installs of the same product running at once share one name, so whichever ran last owns the line.
 
 ## Intended workflow
 
@@ -285,6 +304,10 @@ src/main/kotlin/dev/kosmio/hikari/
     ClaudeTabCustomizer.kt              # the hook and --resume added when a hikari tab's claude starts
     ClaudeTabSweeper.kt                 # deleting the records of gone tabs when the project closes
     ClaudeTabSessions.kt                # where a tab's session is recorded, and whether it can resume
+  mcproxy/
+    McproxyConfigurable.kt              # the Tools › MCP Server › mcproxy settings page
+    McproxyConfig.kt                    # listing an IDE's URL in mcproxy's config, as a pure text edit
+    McproxyConfigFile.kt                # the config's path, and its atomic write
 src/main/resources/META-INF/plugin.xml
 src/main/resources/META-INF/hikari-kotlin.xml         # loaded only when the Kotlin plugin is present
 src/main/resources/META-INF/hikari-terminal.xml       # loaded only when the terminal plugin is present

@@ -16,10 +16,11 @@ IntelliJ.
 
 Actions the user triggers in the IDE UI, and the setup the plugin runs when the user opens a linked
 worktree, may change files and VCS state; a Claude tab's process start writes and deletes its session
-record under the IDE's system directory. **Code that does lives only in `dev.kosmio.hikari.worktree` and
-`dev.kosmio.hikari.claudetab`, and no toolset imports from them** — that separation is what keeps a mutating
-helper out of reach of every MCP tool.
-`grep -rnE 'hikari\.(worktree|claudetab)' src/main/kotlin/dev/kosmio/hikari/changelist src/main/kotlin/dev/kosmio/hikari/analysis`
+record under the IDE's system directory; the mcproxy settings page's button writes mcproxy's config in the
+home directory. **Code that does lives only in `dev.kosmio.hikari.worktree`, `dev.kosmio.hikari.claudetab`
+and `dev.kosmio.hikari.mcproxy`, and no toolset imports from them** — that separation is what keeps a
+mutating helper out of reach of every MCP tool.
+`grep -rnE 'hikari\.(worktree|claudetab|mcproxy)' src/main/kotlin/dev/kosmio/hikari/changelist src/main/kotlin/dev/kosmio/hikari/analysis`
 must stay empty.
 
 ## Build & test
@@ -349,7 +350,10 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 - `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabCustomizer.kt` — the recording hook and `--resume` added when a hikari tab's `claude` starts.
 - `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabSweeper.kt` — deleting, when a project closes, the session records of tabs that are gone.
 - `src/main/kotlin/dev/kosmio/hikari/claudetab/ClaudeTabSessions.kt` — the per-tab session records: their location, the hook input they hold, and whether one can resume.
-- `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`, the worktree action, its notification group and the `.worktreeinclude` startup activity.
+- `src/main/kotlin/dev/kosmio/hikari/mcproxy/McproxyConfigurable.kt` — the Tools › MCP Server › mcproxy settings page.
+- `src/main/kotlin/dev/kosmio/hikari/mcproxy/McproxyConfig.kt` — listing an IDE's URL in mcproxy's config, as a pure text edit.
+- `src/main/kotlin/dev/kosmio/hikari/mcproxy/McproxyConfigFile.kt` — the config's path, and its atomic write.
+- `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`, the worktree action, its notification group, the `.worktreeinclude` startup activity and the mcproxy settings page.
 - `src/main/resources/META-INF/hikari-kotlin.xml` — loaded only when the Kotlin plugin is present.
 - `src/main/resources/META-INF/hikari-terminal.xml` — loaded only when the terminal plugin is present: the Claude tab action, its notification group, the terminal customizer and the project-close sweep.
 

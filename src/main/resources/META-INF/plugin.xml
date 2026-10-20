@@ -2,7 +2,7 @@
     <id>dev.kosmio.hikari</id>
     <name>hikari</name>
     <vendor>kosmio</vendor>
-    <description><![CDATA[Adds tools to the IDE's built-in MCP server. Exposes IntelliJ local changelists: read state, draft commit messages from a changelist diff, and organize modified files into changelists. Adds code intelligence the MCP server does not otherwise offer: a reverse call tree that walks from a declaration to what transitively calls it, following what it overrides so an implementation reaches its port's callers, and a file outline that lists a file's declarations with their signatures and line ranges so only the relevant part need be read. In the Git tool window's Worktrees tab, adds Merge and Remove: merges a finished worktree into the current branch, then removes the worktree and its branch. On 2026.2, a linked worktree opened in the IDE receives the gitignored files its .worktreeinclude lists, as claude -w does. In the terminal tool window, adds a Claude Code button whose tabs resume their Claude Code session when the project reopens. Every surface a program can reach, the MCP tools included, reads and organizes only: none mutates file contents or VCS state, scheduling unversioned files for addition being the single exception.]]></description>
+    <description><![CDATA[Adds tools to the IDE's built-in MCP server. Exposes IntelliJ local changelists: read state, draft commit messages from a changelist diff, and organize modified files into changelists. Adds code intelligence the MCP server does not otherwise offer: a reverse call tree that walks from a declaration to what transitively calls it, following what it overrides so an implementation reaches its port's callers, and a file outline that lists a file's declarations with their signatures and line ranges so only the relevant part need be read. In the Git tool window's Worktrees tab, adds Merge and Remove: merges a finished worktree into the current branch, then removes the worktree and its branch. On 2026.2, a linked worktree opened in the IDE receives the gitignored files its .worktreeinclude lists, as claude -w does. In the terminal tool window, adds a Claude Code button whose tabs resume their Claude Code session when the project reopens. Under Settings | Tools | MCP Server, adds an mcproxy page that shows whether this IDE's MCP URL is listed in mcproxy's config and lists it there. Every surface a program can reach, the MCP tools included, reads and organizes only: none mutates file contents or VCS state, scheduling unversioned files for addition being the single exception.]]></description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
@@ -45,6 +45,11 @@
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="hikari.worktree" displayType="BALLOON"/>
         <postStartupActivity implementation="dev.kosmio.hikari.worktree.WorktreeIncludeActivity"/>
+        <!-- A child of the MCP Server page, whose id is the same on 2026.2 and 2026.3. -->
+        <applicationConfigurable id="dev.kosmio.hikari.mcproxy"
+                                 parentId="com.intellij.mcpserver.settings"
+                                 displayName="mcproxy"
+                                 instance="dev.kosmio.hikari.mcproxy.McproxyConfigurable"/>
     </extensions>
 
     <actions>
