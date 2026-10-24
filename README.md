@@ -290,9 +290,11 @@ src/main/kotlin/dev/kosmio/hikari/
     DeclarationSymbols.kt               # the symbol grammar the tools name declarations with
     SourceFiles.kt                      # locating a file and reporting how fresh the IDE's copy of it is
     Models.kt                           # @Serializable result/DTO types
-    CallTreeLanguageSupport.kt          # the per-language override hop and local folding, an extension point
+    CallTreeLanguageSupport.kt          # the per-language override hop, local folding and name nodes, an extension point
     kt/
       KotlinCallTreeLanguageSupport.kt  # its Kotlin implementation
+    gd/
+      GdScriptCallTreeLanguageSupport.kt  # its GDScript implementation, the name-node rule
   worktree/
     MergeAndRemoveWorktreeAction.kt     # the Worktrees tab action
     WorktreeMergeService.kt             # the merge-and-remove steps

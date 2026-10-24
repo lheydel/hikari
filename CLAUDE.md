@@ -54,6 +54,10 @@ must stay empty.
 - **`./gradlew runIde262` is the same sandbox on 2026.2.3**, the oldest supported line, where the code bridging
   2026.2 and 2026.3 takes its 2026.2 path; `runIde` runs the build target. Its directories sit beside
   `runIde`'s, suffixed `_runIde262` (`config_runIde262`, `log_runIde262`, …).
+- **`./gradlew runRider -PriderPath=<Rider install dir>` is the same sandbox on an installed Rider**, for
+  languages only Rider parses, GDScript among them; the task exists only when the property is set. Its
+  directories are suffixed `_runRider`. A Godot project's shared `.idea` files (`gdProjectSettings.xml`,
+  `indexLayout.xml`, `libraries/`) copied beside a clone of it are enough for the GDScript tools to resolve.
 - **Exercise a tool end-to-end without installing: `./gradlew runIde --args="<project path>"`, and speak MCP to
   the sandbox.** Put
   `<application><component name="McpServerSettings"><option name="enableMcpServer" value="true"/></component></application>`
@@ -291,6 +295,22 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
   neither is a JSX literal. On the `Button` seed it yields `TypeScriptFunction`, `TypeScriptFunctionExpression`,
   `TypeScriptVariable`, `JSProperty`, `JSDefinitionExpression` and no file or JSX node; the language-specific
   `JSFunction` yields a strict subset of that, dropping variable- and property-bound components.
+- **In GDScript the `PsiNameIdentifierOwner` is the declaration's name child, not the declaration.**
+  `GdMethodDeclTl` is a plain `StubBasedPsiElement` holding a `GdMethodIdNmi`, the owner, and references
+  resolve to that child (`GdClassMemberReference.resolve` → `resolveId`, decompiled from Rider 2026.2.1's
+  `rider-plugins-godot-gdscript.jar`). No owner is then an ancestor of a call in a method body, so an
+  ancestor walk on `PsiNameIdentifierOwner` alone finds no enclosing declaration and reports zero callers;
+  `GdScriptCallTreeLanguageSupport.nameNodeOf` maps such a declaration to its name child. Only the
+  top-level declarations (`Gd*DeclTl`, `GdClassNaming`) are stub-based; locals (`GdVarDeclSt`,
+  `GdConstDeclSt`, `GdForSt`, `GdParam`) are not.
+- **That name-node rule is per language because it misfires elsewhere.** Applied to every language — a
+  stub-based node whose only declaration child is nothing but a name — it takes a TypeScript assignment
+  `redirectUrl = …` for a declaration named by its target, since the target is a whole-name
+  `JSDefinitionExpression`, and renames everything declared inside its right-hand side.
+- **GDScript's structure view lists only a file's top-level methods, variables, constants and enums.**
+  `GdStructureViewElement` handles `GdMethodDeclTl`, `GdClassVarDeclTl`, `GdConstDeclTl` and
+  `GdEnumDeclTl`, so `outline` shows no inner class (`class HostDraft:`), none of its members and no signal,
+  while `call_tree` reaches and names them (`HostDraft.value_at`).
 - **`PsiNamedElement` is not a usable substitute.** A `PsiFile` is a `PsiNamedElement`, so a first-named-parent
   filter reports files as callers — on the `Button` seed that is how a large share of its references resolve.
   JSX literals resolve the same way.
@@ -338,8 +358,9 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 - `src/main/kotlin/dev/kosmio/hikari/analysis/DeclarationSymbols.kt` — the symbol grammar `outline` emits and `call_tree` accepts; each must derive it from here or they stop composing.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/SourceFiles.kt` — resolving a requested path and reporting how fresh the IDE's copy of it is.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/Models.kt` — `@Serializable` result DTOs for the analysis tools.
-- `src/main/kotlin/dev/kosmio/hikari/analysis/CallTreeLanguageSupport.kt` — the override hop and local folding, the traversal's per-language extension point.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/CallTreeLanguageSupport.kt` — the override hop, local folding and name nodes, the analysis tools' per-language extension point.
 - `src/main/kotlin/dev/kosmio/hikari/analysis/kt/KotlinCallTreeLanguageSupport.kt` — its Kotlin implementation.
+- `src/main/kotlin/dev/kosmio/hikari/analysis/gd/GdScriptCallTreeLanguageSupport.kt` — its GDScript implementation, the name-node rule.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/MergeAndRemoveWorktreeAction.kt` — the Worktrees tab action, and when it is enabled.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/WorktreeMergeService.kt` — the merge-and-remove steps.
 - `src/main/kotlin/dev/kosmio/hikari/worktree/WorkingTreesCompat.kt` — the git4idea worktree APIs that differ between 2026.2 and 2026.3.

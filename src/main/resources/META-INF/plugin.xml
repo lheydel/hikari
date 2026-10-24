@@ -29,13 +29,19 @@
     </extensions>
 
     <extensionPoints>
-        <!-- "What does this declaration override" and "is this declaration local" have no language-neutral
-             platform API, so they are the surface of the traversal contributed per language, from an
-             optional config file. -->
+        <!-- "What does this declaration override", "is this declaration local" and "which child names
+             this declaration" have no language-neutral platform API, so they are the surface of the
+             analysis tools contributed per language. -->
         <extensionPoint name="callTreeLanguageSupport"
                         interface="dev.kosmio.hikari.analysis.CallTreeLanguageSupport"
                         dynamic="true"/>
     </extensionPoints>
+
+    <extensions defaultExtensionNs="dev.kosmio.hikari">
+        <!-- Uses no GDScript class, so it needs no optional config file: it matches no language in an IDE
+             without the GDScript plugin. -->
+        <callTreeLanguageSupport implementation="dev.kosmio.hikari.analysis.gd.GdScriptCallTreeLanguageSupport"/>
+    </extensions>
 
     <extensions defaultExtensionNs="com.intellij.mcpServer">
         <mcpToolset implementation="dev.kosmio.hikari.changelist.HikariChangelistToolset"/>

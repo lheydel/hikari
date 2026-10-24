@@ -63,6 +63,19 @@ internal class DeclarationSymbols {
         }
 
         /**
+         * The declaration [element] stands for: [element] itself when it is one, otherwise the name node
+         * its language reports naming it ([CallTreeLanguageSupport.nameNodeOf]), or null.
+         *
+         * Where a language makes a declaration's name child the [PsiNameIdentifierOwner], no declaration
+         * is an ancestor of the code inside it, so an upward walk would find no enclosing declaration for
+         * a call in a function body.
+         */
+        fun declarationAt(element: PsiElement): PsiElement? {
+            if (isDeclaration(element)) return element
+            return CallTreeLanguageSupport.of(element.language).firstNotNullOfOrNull { it.nameNodeOf(element) }
+        }
+
+        /**
          * The declaration's name qualified by the enclosing declarations that have real names. The
          * synthetic ones are skipped rather than spelled out, so a property declared inside a lambda
          * reads `UserDeleteFeatureImpl.invoke.deleted` — still unique within the file, with `#N` for
@@ -70,9 +83,15 @@ internal class DeclarationSymbols {
          */
         fun qualifiedName(element: PsiElement): String? {
             val parts = mutableListOf<String>()
+            var named: PsiElement? = null
             var current: PsiElement? = element
             while (current != null && current !is PsiFile) {
-                if (isDeclaration(current)) parts += (current as PsiNameIdentifierOwner).name.orEmpty()
+                // A name node and the declaration it names both answer the name node; it counts once.
+                val declaration = declarationAt(current)
+                if (declaration != null && declaration !== named) {
+                    parts += (declaration as PsiNameIdentifierOwner).name.orEmpty()
+                    named = declaration
+                }
                 current = current.parent
             }
             return if (parts.isEmpty()) null else parts.asReversed().joinToString(".")

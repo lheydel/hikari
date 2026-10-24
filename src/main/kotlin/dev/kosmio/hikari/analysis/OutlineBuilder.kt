@@ -13,7 +13,7 @@ import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
-import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.isDeclaration
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.declarationAt
 
 /**
  * A file's declarations with their signatures and line ranges, bodies omitted, so a caller can make a
@@ -26,8 +26,8 @@ import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.isDeclaration
  * each. The model builds without an open editor, which is what makes it usable from a tool.
  *
  * The structure view offers more than declarations, though: it surfaces the file root, JSX literals and
- * ES6 re-export specifiers as nodes too. Those are dropped by [isDeclaration], the same filter
- * `call_tree` picks a reference's enclosing declaration with, so every entry emitted here carries a
+ * ES6 re-export specifiers as nodes too. Those are dropped by [DeclarationSymbols.declarationAt], the same
+ * rule `call_tree` picks a reference's enclosing declaration with, so every entry emitted here carries a
  * symbol `call_tree` resolves back to exactly one declaration.
  */
 internal class OutlineBuilder(private val project: Project, private val basePath: String) {
@@ -37,9 +37,10 @@ internal class OutlineBuilder(private val project: Project, private val basePath
     /**
      * One declaration on its way into the result, with the index of the entry that encloses it.
      * [label] is read while the structure view model is alive, since it is disposed before the entries
-     * are built.
+     * are built. [span] is the structure view's own node, whose range is the entry's, since the
+     * declaration a symbol names can be only its name node.
      */
-    private class Candidate(val element: PsiElement, val parent: Int, val label: String?)
+    private class Candidate(val element: PsiElement, val span: PsiElement, val parent: Int, val label: String?)
 
     /** One rendered declaration, held until the whole file is known so ambiguity can be resolved. */
     private class Entry(
@@ -122,8 +123,9 @@ internal class OutlineBuilder(private val project: Project, private val basePath
             fun walk(node: TreeElement, parent: Int) {
                 val value = (node as? StructureViewTreeElement)?.value
                 var enclosing = parent
-                if (value is PsiElement && isDeclaration(value)) {
-                    out += Candidate(value, parent, node.presentation.presentableText)
+                val declaration = (value as? PsiElement)?.let(::declarationAt)
+                if (declaration != null) {
+                    out += Candidate(declaration, value as PsiElement, parent, node.presentation.presentableText)
                     enclosing = out.size - 1
                 }
                 node.children.forEach { walk(it, enclosing) }
@@ -144,7 +146,7 @@ internal class OutlineBuilder(private val project: Project, private val basePath
     ): Entry? {
         val element = candidate.element
         val symbol = symbols.symbolFor(element, relativePath, psiFile) ?: return null
-        val range = element.textRange ?: return null
+        val range = candidate.span.textRange ?: return null
         return Entry(
             symbol = symbol,
             // The structure view's own label for the declaration: a signature where the language has one

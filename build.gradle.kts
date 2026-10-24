@@ -68,6 +68,10 @@ intellijPlatformTesting {
         // A sandbox on the oldest supported line, where the code bridging 2026.2 and 2026.3 takes its 2026.2
         // path. `runIde` runs the build target.
         register("runIde262") { version = "2026.2.3" }
+        // A sandbox on an installed Rider, for languages only Rider parses (GDScript): `-PriderPath=<install dir>`.
+        providers.gradleProperty("riderPath").orNull?.let { rider ->
+            register("runRider") { localPath = file(rider) }
+        }
     }
 }
 

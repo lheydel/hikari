@@ -17,7 +17,7 @@ import com.intellij.psi.search.searches.DefinitionsScopedSearch
 import com.intellij.psi.search.searches.ReferencesSearch
 import dev.kosmio.hikari.ProjectPaths
 import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.declarationsOf
-import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.isDeclaration
+import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.declarationAt
 import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.matchesFor
 import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.parseSymbol
 import dev.kosmio.hikari.analysis.DeclarationSymbols.Companion.qualifiedName
@@ -174,15 +174,18 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
 
     /**
      * The declaration a reference belongs to: its nearest enclosing one under
-     * [DeclarationSymbols.isDeclaration], the same predicate the symbol grammar is built on, so every
-     * node this traversal reports can also be named. A declaration its language reports local is passed
-     * over for the one enclosing it: its references cannot leave that declaration, so as a node of its own
-     * it would only spend a level of depth before reaching it.
+     * [DeclarationSymbols.declarationAt], the same rule the symbol grammar is built on, so every node
+     * this traversal reports can also be named. A declaration its language reports local is passed over
+     * for the one enclosing it: its references cannot leave that declaration, so as a node of its own it
+     * would only spend a level of depth before reaching it.
      */
     private fun enclosingDeclaration(from: PsiElement): PsiElement? {
         var current: PsiElement? = from.parent
         while (current != null && current !is PsiFile) {
-            if (isDeclaration(current) && providersFor(current.language).none { it.isLocal(current) }) return current
+            val declaration = declarationAt(current)
+            if (declaration != null && providersFor(declaration.language).none { it.isLocal(declaration) }) {
+                return declaration
+            }
             current = current.parent
         }
         return null
@@ -236,7 +239,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
         val node = workNode(key, element, Hop.REFERENCE)
             ?: mcpFail("'${seedRef.symbol}' could not be resolved to a declaration in ${seedRef.file}.")
         val language = psiFile.language
-        return Seed(node, language.id, providersFor(language).map { it.id })
+        return Seed(node, language.id, providersFor(language).filter { it.answersOverrides }.map { it.id })
     }
 
     /** Re-resolve a node from its coordinates after the element behind it was invalidated. */
@@ -250,7 +253,7 @@ internal class CallTreeTraversal(private val project: Project, private val baseP
 
     private fun providersFor(language: Language): List<CallTreeLanguageSupport> =
         providersByLanguage.getOrPut(language) {
-            CallTreeLanguageSupport.EP_NAME.extensionList.filter { it.supports(language) }
+            CallTreeLanguageSupport.of(language)
         }
 
     private fun lineOf(psiFile: PsiFile, element: PsiElement): Int {
