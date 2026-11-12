@@ -347,6 +347,25 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
   source set at `platform/server/test/src/main/kotlin`. Test detection has to key on path or package, and it
   is per-language: TypeScript tests sit beside their sources as `*.test.tsx`.
 
+## Index exclusions
+
+- **`registerExclusionCondition` is the file index exclusion that sees a whole path**
+  (`WorkspaceFileSetRegistrar`, 2026.2 and 2026.3): `registerExcludedRoot` takes concrete roots, which a glob
+  would have to be walked into, and `registerExclusionPatterns` matches file names only.
+  `ExcludedFileSet.ByCondition.isExcluded` calls the condition on the file and on each ancestor up to the
+  content root, at lookup time: so it is on the hot path, and a directory created
+  later is excluded with no re-registration. `makeRootsChange(…, TOTAL_RESCAN)` brings the indexes in line
+  after the patterns change. The whole API is `@Experimental`, which `verifyPlugin` reports without failing.
+- **The `workspaceModel.fileIndexContributor` extension point is application-level and its contributor is
+  handed no project**, so the condition finds one from the file: the open project whose `basePath` most
+  closely contains it.
+- **A persisted state that serializes to nothing leaves the component's previous element in the file.** The
+  serializer drops an empty string as a default value, so `IndexExclusionState.customized` keeps
+  every set state non-empty; without it an emptied list loads its old patterns.
+- **In a sandbox, `project.save()` from `run_ide_script` did not write `.idea/workspace.xml`**, while
+  `saveAll()` did write the application's `hikari.xml`. Closing the project
+  (`ProjectManagerEx.closeAndDispose`) writes it.
+
 ## Source layout
 
 - `src/main/kotlin/dev/kosmio/hikari/ProjectPaths.kt` — project-relative path helpers, shared by every toolset this plugin contributes.
@@ -374,7 +393,11 @@ The widest of them serialises to 9 263 c ≈ 2 316 t, at `chars / 4` per `SESSIO
 - `src/main/kotlin/dev/kosmio/hikari/mcproxy/McproxyConfigurable.kt` — the Tools › MCP Server › mcproxy settings page.
 - `src/main/kotlin/dev/kosmio/hikari/mcproxy/McproxyConfig.kt` — listing an IDE's URL in mcproxy's config, as a pure text edit.
 - `src/main/kotlin/dev/kosmio/hikari/mcproxy/McproxyConfigFile.kt` — the config's path, and its atomic write.
-- `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`, the worktree action, its notification group, the `.worktreeinclude` startup activity and the mcproxy settings page.
+- `src/main/kotlin/dev/kosmio/hikari/indexing/IndexExclusionContributor.kt` — the file-index contributor that excludes what the patterns match, and the rescan after an edit.
+- `src/main/kotlin/dev/kosmio/hikari/indexing/IndexExclusionSettings.kt` — the global and per-project pattern lists.
+- `src/main/kotlin/dev/kosmio/hikari/indexing/ExclusionPatterns.kt` — the glob syntax and its matching.
+- `src/main/kotlin/dev/kosmio/hikari/indexing/IndexExclusionsConfigurable.kt` — the Tools › Index Exclusions settings page.
+- `src/main/resources/META-INF/plugin.xml` — the `<mcpToolset>` registrations, the extension point, the optional `<depends>`, the worktree action, its notification group, the `.worktreeinclude` startup activity, the mcproxy and index-exclusion settings pages and the file-index contributor.
 - `src/main/resources/META-INF/hikari-kotlin.xml` — loaded only when the Kotlin plugin is present.
 - `src/main/resources/META-INF/hikari-terminal.xml` — loaded only when the terminal plugin is present: the Claude tab action, its notification group, the terminal customizer and the project-close sweep.
 

@@ -166,6 +166,23 @@ Apply. Run it again whenever the IDE's port moves.
 - `MCPROXY_CONFIG` is not read, since the IDE's environment is not the one Claude Code starts mcproxy in.
 - Installs of the same product running at once share one name, so whichever ran last owns the line.
 
+## Index exclusions
+
+**Settings | Tools | Index Exclusions** lists path patterns the IDE leaves out of indexing, as if they
+were marked Excluded, without touching the project model: one list for every project, one for the
+open project on top of it.
+
+- Patterns are relative to the project directory and follow `.gitignore`: `*` and `?` stay within a
+  path segment, `**` crosses segments (`.work/**/snapshots` matches `.work/snapshots` too), a pattern
+  without `/` matches at any depth, and a trailing `/` matches directories only.
+- A matching directory created while the project is open is excluded as soon as it exists.
+- Apply re-scans the projects whose list changed: every open project for the global list.
+- The global list lives in the IDE's `hikari.xml`, the project list in the project's
+  `.idea/workspace.xml`, which is per-user and not shared.
+- A file is matched against the open project whose directory most closely contains it, so with one
+  open project nested in another's directory, the inner project's list applies to its files
+  in the outer project's index too.
+
 ## Intended workflow
 
 1. The agent finishes implementing.
